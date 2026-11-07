@@ -17,6 +17,7 @@ const Engine = require('./engine/engine');
 const mcp = require('./integrations/mcp');
 const sec = require('./security');
 const { isPrivateIp } = require('./integrations/netguard');
+const { cleanRateLimits } = require('./store/pgStores');
 
 const PUBLIC = path.join(__dirname, '..', 'public');
 const ENGINE = path.join(__dirname, 'engine', 'engine.js');
@@ -90,16 +91,17 @@ async function sendJson(req, res, payload) {
   res.end(out);
 }
 
-const INBOUND_MAX_BYTES = 25 * 1024 * 1024;
+const MB = 1024 * 1024;
+const INBOUND_MAX_BYTES = 25 * MB; // the default; 4 MB on Vercel (cfg.inboundMaxMb), whose requests are capped at 4.5 MB
 const INBOUND_AT_ONCE = 2;
-const INBOUND_TOO_LARGE = 'An inbound request can be at most 25 MB in total. Send large files one at a time.';
+const inboundTooLarge = (mb) => 'An inbound request can be at most ' + mb + ' MB in total. Send large files one at a time.';
 
 /**
  * Multer storage that keeps files in memory like memoryStorage, but stops as soon as the files of one request add up
  * to more than `totalBytes` (multer itself only limits each file), so an oversized request is refused while it
  * streams in, before it is all held in memory.
  */
-function cappedMemoryStorage(totalBytes) {
+function cappedMemoryStorage(totalBytes, message = inboundTooLarge(totalBytes / MB)) {
   return {
     _handleFile(req, file, cb) {
       const chunks = [];
@@ -116,7 +118,7 @@ function cappedMemoryStorage(totalBytes) {
         if (req.inboundBytes > totalBytes) {
           chunks.length = 0;
           file.stream.resume(); // let the rest flow past without keeping it
-          return finish(new InputError(413, INBOUND_TOO_LARGE));
+          return finish(new InputError(413, message));
         }
         chunks.push(chunk);
         size += chunk.length;
@@ -202,7 +204,10 @@ function autoChoice(info) {
   return { kind: p.kind, table: idx, mapping: p.mapping || {}, options: Object.assign({}, p.layout ? { layout: p.layout } : {}, p.options) };
 }
 
-function createApp({ cfg, accounts, workspaceFor, auth, vault, google, sync, logger, clock = Date.now }) {
+function createApp({ cfg, accounts, workspaceFor, auth, vault, google, sync, logger, clock = Date.now, storage = {} }) {
+  const inboundMb = cfg.inboundMaxMb || INBOUND_MAX_BYTES / MB;
+  const inboundMax = inboundMb * MB;
+  const INBOUND_TOO_LARGE = inboundTooLarge(inboundMb);
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', cfg.trustProxy === undefined ? 'loopback, linklocal, uniquelocal' : cfg.trustProxy);
@@ -249,27 +254,51 @@ function createApp({ cfg, accounts, workspaceFor, auth, vault, google, sync, log
     })
   );
 
+  // Vercel Cron (daily on the Hobby plan): refresh Google and webhooks for everyone, and tidy old rate-limit rows.
+  // Vercel sends "Authorization: Bearer <CRON_SECRET>"; without that secret configured the route does not exist.
+  app.get(
+    '/cron/sync',
+    wrap(async (req, res) => {
+      const expected = 'Bearer ' + cfg.cronSecret;
+      const got = String(req.get('Authorization') || '');
+      const ok = cfg.cronSecret && got.length === expected.length && crypto.timingSafeEqual(Buffer.from(got), Buffer.from(expected));
+      if (!ok) return res.status(cfg.cronSecret ? 401 : 404).json({ error: cfg.cronSecret ? 'Not authorised.' : 'Not found.' });
+      const started = clock();
+      await sync.runAll();
+      if (storage.db) await cleanRateLimits(storage.db);
+      res.json({ ok: true, ms: clock() - started });
+    })
+  );
+
   app.use(express.json({ limit: '100kb' }));
 
-  const limiter = (windowMs, limit, error) => rateLimit({ windowMs, limit, standardHeaders: true, legacyHeaders: false, message: { error } });
-  const loginLimit = limiter(15 * 60e3, cfg.authAttempts, 'Too many attempts. Try again in a few minutes.');
+  // With several instances (Vercel) the counts live in Postgres, one prefix per limit; otherwise in this process.
+  const shared = (prefix) => (storage.rateLimitStore ? { store: storage.rateLimitStore(prefix) } : {});
+  const limiter = (prefix, windowMs, limit, error) =>
+    rateLimit(Object.assign({ windowMs, limit, standardHeaders: true, legacyHeaders: false, message: { error } }, shared(prefix)));
+  const loginLimit = limiter('auth:', 15 * 60e3, cfg.authAttempts, 'Too many attempts. Try again in a few minutes.');
   // Sign-up says when an email is taken (there is no email verification), so tries are also limited per email address,
   // not only per IP: repeating one address from many machines gets nowhere either. SIGNUP_CODE or ALLOW_SIGNUP=false
   // close the question entirely (see the README).
-  const signupEmailLimit = rateLimit({
-    windowMs: 15 * 60e3,
-    limit: cfg.authAttempts,
-    standardHeaders: true,
-    legacyHeaders: false,
-    keyGenerator: (req) => 'signup:' + sec.normalEmail((req.body || {}).email),
-    message: { error: 'Too many attempts. Try again in a few minutes.' }
-  });
-  const uploadLimit = limiter(60e3, 30, 'Too many uploads. Wait a minute.');
-  const machineLimit = limiter(60e3, 60, 'Too many requests. Slow down.');
+  const signupEmailLimit = rateLimit(
+    Object.assign(
+      {
+        windowMs: 15 * 60e3,
+        limit: cfg.authAttempts,
+        standardHeaders: true,
+        legacyHeaders: false,
+        keyGenerator: (req) => 'signup:' + sec.normalEmail((req.body || {}).email),
+        message: { error: 'Too many attempts. Try again in a few minutes.' }
+      },
+      shared('signup-email:')
+    )
+  );
+  const uploadLimit = limiter('upload:', 60e3, 30, 'Too many uploads. Wait a minute.');
+  const machineLimit = limiter('machine:', 60e3, 60, 'Too many requests. Slow down.');
   const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: cfg.maxUploadMb * 1024 * 1024, files: 1 } });
   // Inbound: one forwarded email fits (mail services allow about 25 MB per message), each file still at most
   // MAX_UPLOAD_MB, and only two requests are read into memory at a time, so memory stays bounded however many arrive.
-  const uploadInbound = multer({ storage: cappedMemoryStorage(INBOUND_MAX_BYTES), limits: { fileSize: cfg.maxUploadMb * 1024 * 1024, files: 10 } });
+  const uploadInbound = multer({ storage: cappedMemoryStorage(inboundMax, INBOUND_TOO_LARGE), limits: { fileSize: cfg.maxUploadMb * 1024 * 1024, files: 10 } });
   const inboundSlot = slots(INBOUND_AT_ONCE);
 
   async function engineFor(uid) {
@@ -395,7 +424,7 @@ function createApp({ cfg, accounts, workspaceFor, auth, vault, google, sync, log
     inboundSlot,
     (req, res, next) =>
       /^message\/rfc822|^text\/plain/.test(req.get('Content-Type') || '')
-        ? express.raw({ type: () => true, limit: INBOUND_MAX_BYTES })(req, res, (err) =>
+        ? express.raw({ type: () => true, limit: inboundMax })(req, res, (err) =>
             next(err && err.type === 'entity.too.large' ? new InputError(413, INBOUND_TOO_LARGE) : err)
           )
         : next(),
@@ -471,7 +500,7 @@ function createApp({ cfg, accounts, workspaceFor, auth, vault, google, sync, log
         users.push(u);
         return u;
       });
-      if (isFirst) await adoptLegacy(user.id);
+      if (isFirst && storage.files !== false) await adoptLegacy(user.id); // only a disk can hold the old workspace
       auth.login(res, user);
       res.status(201).json({ ok: true, user: { email } });
     })

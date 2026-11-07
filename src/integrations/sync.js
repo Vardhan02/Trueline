@@ -24,7 +24,9 @@ function createSync({
   clock = Date.now,
   http = globalThis.fetch,
   debounceMs = 1500,
-  timeZone = 'Europe/Dublin'
+  timeZone = 'Europe/Dublin',
+  lock = null, // a lock shared by every instance (Postgres); without one, syncs are kept in order in this process only
+  afterResponse = null // serverless: run work after the response is sent (Vercel's waitUntil) instead of on a timer
 }) {
   const timers = new Map();
   const chains = new Map();
@@ -233,10 +235,29 @@ function createSync({
     return result;
   }
 
+  /**
+   * With a shared lock: run unless another instance is syncing this account. That one is told to go again when it
+   * finishes, so the newest files still reach Google, and two instances never create the same events.
+   */
+  async function runLocked(uid) {
+    for (let round = 0; round < 3; round++) {
+      if (!(await lock.acquire(uid))) return { skipped: 'already syncing; this change will be included' };
+      let again;
+      let result;
+      try {
+        result = await run(uid);
+      } finally {
+        again = await lock.release(uid);
+      }
+      if (!again) return result;
+    }
+    return { skipped: 'still busy; the next sync will catch up' };
+  }
+
   /** Run now, one sync per user at a time. */
   function runNow(uid) {
     const prev = chains.get(uid) || Promise.resolve();
-    const next = prev.then(() => run(uid));
+    const next = prev.then(() => (lock ? runLocked(uid) : run(uid)));
     const settled = next.catch((e) => logger.error({ uid, err: short(e) }, 'sync failed'));
     chains.set(uid, settled);
     settled.then(() => chains.get(uid) === settled && chains.delete(uid));
@@ -244,7 +265,23 @@ function createSync({
   }
 
   /** Run shortly, so a batch of uploads causes one sync. */
+  const queued = new Set();
   function schedule(uid) {
+    if (afterResponse) {
+      // Serverless: a timer would be frozen with the instance. Run after this response instead; several schedules for
+      // the same account in one request become one sync.
+      if (queued.has(uid)) return;
+      queued.add(uid);
+      afterResponse(
+        Promise.resolve()
+          .then(() => {
+            queued.delete(uid);
+            return runNow(uid);
+          })
+          .catch(() => {})
+      );
+      return;
+    }
     clearTimeout(timers.get(uid));
     const t = setTimeout(() => {
       timers.delete(uid);

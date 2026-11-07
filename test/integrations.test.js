@@ -134,7 +134,7 @@ describe('Google sync end to end (fake Google)', () => {
     const acct = await (await t.fetch(t.base + '/api/account')).json();
     assert.strictEqual(acct.google.connected, true);
     assert.strictEqual(acct.google.account, 'owner@gmail.example');
-    const raw = require('node:fs').readFileSync(require('node:path').join(t.dir, 'accounts.json'), 'utf8');
+    const raw = await t.rawAccounts();
     assert.ok(!raw.includes('"rt"') && !raw.includes('refreshToken'), 'refresh token is encrypted at rest');
   });
   test('first sync fills calendar, tasks and doc; a second sync changes nothing', async () => {
@@ -331,7 +331,7 @@ describe('inbound, webhooks, keys and MCP over HTTP', () => {
     const key = created.key;
     assert.match(key, /^tl_/);
     assert.ok(!JSON.stringify(created.account).includes(key));
-    const raw = require('node:fs').readFileSync(require('node:path').join(t.dir, 'accounts.json'), 'utf8');
+    const raw = await t.rawAccounts();
     assert.ok(!raw.includes(key));
     const auth = { Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' };
     const rpc = (body) => globalThis.fetch(t.base + '/mcp', { method: 'POST', headers: auth, body: JSON.stringify(body) });

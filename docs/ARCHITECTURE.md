@@ -37,6 +37,7 @@ The key rule: **no language model decides what is true.** Everything shown is pr
 
 - `src/security.js`: scrypt password hashing, AES-256-GCM vault for stored secrets, token helpers, password rules.
 - `src/store/accountStore.js`: `accounts.json`, atomic writes, one change at a time. Each account's files live in `users/<id>/workspace.json`.
+- `src/db.js`, `src/store/pgStores.js`: Postgres storage, chosen when `DATABASE_URL` is set (Vercel). Same interfaces as the file stores; the in-process write queues become row locks and advisory locks, rate limits and the per-account sync lease live in tables, so several instances can run at once. `api/index.js` is the Vercel entry point; `vercel.json` routes, headers and the daily cron.
 - `src/store/snapshot.js`: reads are served from a parsed, frozen copy that is reused while the file is unchanged (checked with `fs.stat` on every read, so outside edits are seen). Accounts are indexed by id, email, API-key hash and inbound-link hash; the 16 most recently used workspaces are kept. Writers always start from a fresh read of the file.
 - `src/auth.js`: signed session cookie `userId.expiry.sessionVersion.signature`; OAuth `state` signing.
 - `src/integrations/plan.js` (pure): engine → calendar events, tasks, doc text, each with a key and hash.

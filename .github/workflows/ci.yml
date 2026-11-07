@@ -17,6 +17,8 @@ jobs:
       - run: npm run lint
       - run: npm run format:check
       - run: npm run test:coverage
+      - name: Tests against Postgres (the storage used on Vercel)
+        run: npm run test:pg
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
   docker:
