@@ -1,0 +1,9 @@
+Invoice No,Customer,Invoice Date,Due Date,Amount,Status
+INV-1001,Acme Ltd,01/10/2026,31/10/2026,"£18,400.00",Open
+INV-1002,Brightwave Ltd,26/09/2026,26/10/2026,"9,800.00",Open
+INV-1003,Delta Retail,10/09/2026,10/10/2026,5600,Paid
+INV-1004,Marlow Design,06/10/2026,05/11/2026,"4,100.00",Open
+,No Number Co,06/10/2026,05/11/2026,100,Open
+INV-1005,Credit Co,06/10/2026,05/11/2026,(250.00),Open
+INV-1006,Bad Amount Co,06/10/2026,05/11/2026,abc,Open
+INV-1002,Brightwave Ltd,26/09/2026,26/10/2026,"9,900.00",Open

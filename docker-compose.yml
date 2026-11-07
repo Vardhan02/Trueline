@@ -1,0 +1,20 @@
+services:
+  trueline:
+    build: .
+    image: trueline:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+    ports:
+      - '${PORT:-3000}:3000'
+    volumes:
+      - trueline-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  trueline-data:

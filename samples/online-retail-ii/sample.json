@@ -1,0 +1,44 @@
+{
+  "title": "Real UK wholesaler invoices (Online Retail II)",
+  "description": "Real invoice numbers, dates, customers, amounts and monthly turnover from the UCI Online Retail II dataset (CC BY 4.0), as of 9 Nov 2011. Payment terms, payments, the bank statement, emails and cost settings are SIMULATED and labelled as such in the file names.",
+  "settings": {
+    "company": "Online Retail Co (sample)",
+    "currency": "GBP",
+    "asOf": "2011-11-09",
+    "costOfSalesPct": 0.66,
+    "overheadsMonthly": 120000,
+    "staleDays": 7,
+    "termsDays": 30,
+    "emailDomain": "giftware-sample.example"
+  },
+  "files": [
+    {
+      "file": "ar_ledger_REAL_invoices.csv",
+      "kind": "ledger"
+    },
+    {
+      "file": "bank_statement_SIMULATED.csv",
+      "kind": "bank"
+    },
+    {
+      "file": "pnl_monthly_turnover_REAL.csv",
+      "kind": "pnl"
+    },
+    {
+      "file": "inbox_SIMULATED_1_remittance.eml",
+      "kind": "emails"
+    },
+    {
+      "file": "inbox_SIMULATED_2_promise.eml",
+      "kind": "emails"
+    },
+    {
+      "file": "inbox_SIMULATED_3_chase_sent.eml",
+      "kind": "emails"
+    },
+    {
+      "file": "inbox_SIMULATED_4_newsletter.eml",
+      "kind": "emails"
+    }
+  ]
+}

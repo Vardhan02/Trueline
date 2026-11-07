@@ -1,0 +1,3 @@
+Invoice No;Customer;Invoice Date;Due Date;Amount;Outstanding
+R-1;Mueller GmbH;03.10.2026;02.11.2026;1.234,50;1.234,50
+R-2;Schmidt AG;05.10.2026;04.11.2026;800,00;0,00

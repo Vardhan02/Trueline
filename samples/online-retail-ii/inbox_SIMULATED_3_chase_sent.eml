@@ -1,0 +1,13 @@
+From: accounts@giftware-sample.example
+To: ap@customer-c.example
+Date: Fri, 04 Nov 2011 09:30:00 +0000
+Subject: Reminder: INV-569010 is overdue
+Message-ID: <inbox_SIMULATED_3_chase_sent.eml@sample.invalid>
+Content-Type: text/plain; charset=utf-8
+
+Hi,
+
+A quick reminder that INV-569010 (£5,867.08) was due on 30 Oct and is still unpaid. Could you confirm when we can expect payment?
+
+Thanks,
+Finance team

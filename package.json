@@ -1,0 +1,40 @@
+{
+  "name": "trueline",
+  "version": "1.0.0",
+  "description": "A daily finance brief for owners of small businesses: pulls scattered finance files together, ranks what needs action, and shows the source for every line.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "node --test \"test/*.test.js\"",
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-exclude=\"test/**\" --test-coverage-exclude=\"scripts/**\" --test-coverage-exclude=\"samples/**\" --test-coverage-lines=95 --test-coverage-branches=90 \"test/*.test.js\"",
+    "build:sample": "python3 -I scripts/build_real_sample.py \"$INPUT\" samples/online-retail-ii",
+    "check": "npm run lint && npm run format:check && npm test",
+    "backtest": "node scripts/backtest.js",
+    "build:demo": "node scripts/build-static.js"
+  },
+  "license": "UNLICENSED",
+  "dependencies": {
+    "csv-parse": "^7.0.3",
+    "express": "^5.3.0",
+    "express-rate-limit": "^8.7.3",
+    "helmet": "^8.3.0",
+    "multer": "^2.5.0",
+    "pino": "^10.4.0",
+    "read-excel-file": "^9.3.14",
+    "yarn": "^1.22.22"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.14.0",
+    "globals": "^17.14.0",
+    "prettier": "^3.9.10"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  }
+}
