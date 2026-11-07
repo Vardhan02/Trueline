@@ -13,6 +13,10 @@ Create an account, then drop files on your account page (or click **Load sample*
 
 Supported files: CSV/TSV, Excel `.xlsx`, bank `.ofx`/`.qfx`, emails `.eml`. Detail: [docs/DATA-FORMATS.md](docs/DATA-FORMATS.md).
 
+## Deploy on Vercel
+
+Add a Neon database to the Vercel project (Storage tab), set `SESSION_SECRET`, `ENCRYPTION_KEY` and `CRON_SECRET`, and deploy. Data lives in Postgres there; uploads are limited to 4 MB. Steps and differences: [docs/DEPLOY.md](docs/DEPLOY.md#vercel).
+
 ## Run it properly (Docker)
 
 ```bash
@@ -25,6 +29,7 @@ curl localhost:3000/readyz
 
 - Each person signs up with email and password and sees only their own files and connections.
 - Passwords: salted **scrypt** hashes (never stored or logged in clear), 10+ characters, rate-limited sign-in, identical answers for unknown email and wrong password. Changing the password signs out every other device.
+- Sign-up tells a visitor when an email already has an account (there is no email verification, so it cannot answer otherwise). Attempts are limited per IP address and per email. To stop strangers checking which emails are registered, set `SIGNUP_CODE` (invite code) or `ALLOW_SIGNUP=false` once your team has signed up.
 - Sessions: HttpOnly, SameSite=Lax, Secure in production, HMAC-signed; CSRF header required on every change.
 - Secrets at rest (Google refresh tokens, webhook addresses, inbound links): **AES-256-GCM** with `ENCRYPTION_KEY`. API keys are stored only as SHA-256 hashes and shown once.
 - Data files are written with owner-only permissions (0600).
@@ -56,7 +61,7 @@ Architecture and where to change things: [docs/ARCHITECTURE.md](docs/ARCHITECTUR
 
 ## Honest limits
 
-- Accounts are individual: there are no shared team workspaces or roles yet. Storage is JSON files on one server (fine for hundreds of users; use a database beyond that).
+- Accounts are individual: there are no shared team workspaces or roles yet. Storage is JSON files on one server by default (fine for hundreds of users), or Postgres when `DATABASE_URL` is set (used on Vercel).
 - Google sync is tested against a faithful fake of the Google APIs, not a live Google account. The first real connection needs the Google Cloud setup in docs/GOOGLE.md.
 - There is no direct Gmail or Outlook mailbox connection: incoming email arrives through the inbound link.
 - No live bank connection: bank data comes from uploaded statements.

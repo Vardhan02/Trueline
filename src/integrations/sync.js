@@ -9,7 +9,7 @@
 const crypto = require('node:crypto');
 const Engine = require('../engine/engine');
 const { buildDataset } = require('../ingest/build');
-const { plan } = require('./plan');
+const { plan, emptyPlan } = require('./plan');
 const { GoogleError } = require('./google');
 
 const gone = (e) => e instanceof GoogleError && (e.status === 404 || e.status === 410);
@@ -24,28 +24,29 @@ function createSync({
   clock = Date.now,
   http = globalThis.fetch,
   debounceMs = 1500,
-  timeZone = 'Europe/Dublin'
+  timeZone = 'Europe/Dublin',
+  lock = null, // a lock shared by every instance (Postgres); without one, syncs are kept in order in this process only
+  afterResponse = null // serverless: run work after the response is sent (Vercel's waitUntil) instead of on a timer
 }) {
   const timers = new Map();
   const chains = new Map();
   const stamp = () => new Date(clock()).toISOString().replace(/\.\d+Z$/, 'Z');
 
-  async function engineFor(uid) {
+  async function load(uid) {
     const ws = await workspaceFor(uid).load();
-    if (!ws.sources.length) return null;
-    return Engine.create(buildDataset(ws, { clock }));
+    return { ws, eng: ws.sources.length ? Engine.create(buildDataset(ws, { clock })) : null };
   }
 
-  /** Make `have` (key -> {id, hash}) match `want` ([{key, hash, body}]). */
-  async function reconcile(have, want, ops) {
-    const next = {};
+  /**
+   * Make `map` (key -> {id, hash}) match `want` ([{key, hash, body}]). `map` is updated in place after every call that
+   * succeeds, so if Google fails halfway, what was already created is still remembered and not created twice next time.
+   */
+  async function reconcile(map, want, ops) {
     const counts = { created: 0, updated: 0, closed: 0 };
+    const wanted = new Set(want.map((w) => w.key));
     for (const w of want) {
-      const prev = have[w.key];
-      if (prev && prev.hash === w.hash) {
-        next[w.key] = prev;
-        continue;
-      }
+      const prev = map[w.key];
+      if (prev && prev.hash === w.hash) continue;
       let id;
       if (prev) {
         try {
@@ -60,57 +61,69 @@ function createSync({
         id = (await ops.insert(w.body)).id;
         counts.created++;
       }
-      next[w.key] = { id, hash: w.hash };
+      map[w.key] = { id, hash: w.hash };
     }
-    for (const key of Object.keys(have)) {
-      if (next[key]) continue;
+    for (const key of Object.keys(map)) {
+      if (wanted.has(key)) continue;
       try {
-        await ops.close(have[key].id);
+        await ops.close(map[key].id);
       } catch (e) {
         if (!gone(e)) throw e;
       }
+      delete map[key];
       counts.closed++;
     }
-    return { map: next, counts };
+    return { map, counts };
   }
 
+  /** Sync Google. On failure the error carries `state`: whatever was created before it failed, so it is saved, not lost. */
   async function syncGoogle(g, p) {
+    const st = JSON.parse(JSON.stringify(Object.assign({ events: {}, tasks: {} }, g.state)));
+    try {
+      return await syncGoogleInto(st, g, p);
+    } catch (e) {
+      e.state = st;
+      throw e;
+    }
+  }
+
+  async function syncGoogleInto(st, g, p) {
     const secret = vault.open(g.sealed);
     const t = (await google.refresh(secret.refreshToken)).access_token;
-    const st = Object.assign({ events: {}, tasks: {} }, g.state);
 
-    const withContainer = async (field, create, fn) => {
+    const withContainer = async (field, items, create, fn) => {
       if (!st[field]) st[field] = (await create()).id;
       try {
         return await fn(st[field]);
       } catch (e) {
         if (!gone(e)) throw e; // the whole calendar or list was deleted: make a new one once
         st[field] = (await create()).id;
+        st[items] = {}; // what lived in the old one went with it
         return fn(st[field]);
       }
     };
     const cal = await withContainer(
       'calendarId',
+      'events',
       () => google.calendar.create(t, 'Trueline', timeZone),
       (id) =>
-        reconcile(Object.assign({}, st.events), p.events, {
+        reconcile(st.events, p.events, {
           insert: (b) => google.calendar.insert(t, id, b),
           patch: (eid, b) => google.calendar.patch(t, id, eid, b),
           close: (eid) => google.calendar.remove(t, id, eid)
         })
     );
-    st.events = cal.map;
     const tasks = await withContainer(
       'taskListId',
+      'tasks',
       () => google.tasks.createList(t, 'Trueline'),
       (id) =>
-        reconcile(Object.assign({}, st.tasks), p.tasks, {
+        reconcile(st.tasks, p.tasks, {
           insert: (b) => google.tasks.insert(t, id, b),
           patch: (tid, b) => google.tasks.patch(t, id, tid, b),
           close: (tid) => google.tasks.patch(t, id, tid, { status: 'completed' }) // done or no longer needed: tick it off
         })
     );
-    st.tasks = tasks.map;
 
     if (st.docHash !== p.doc.hash || !st.docId) {
       const write = async () => {
@@ -164,9 +177,16 @@ function createSync({
     const wantsGoogle = Boolean(user.google && user.google.sealed && google.configured);
     const hooks = user.webhooks || [];
     if (!wantsGoogle && !hooks.length) return { skipped: 'nothing connected' };
-    const eng = await engineFor(uid);
-    if (!eng) return { skipped: 'no files' };
-    const p = plan(eng);
+    const { ws, eng } = await load(uid);
+    let p;
+    if (eng) p = plan(eng);
+    else {
+      // Every file was removed. Anything Trueline put in Google is now out of date: take it out, once.
+      const st = (user.google && user.google.state) || {};
+      const leftovers = Object.keys(st.events || {}).length + Object.keys(st.tasks || {}).length;
+      if (!wantsGoogle || !leftovers) return { skipped: 'no files' };
+      p = emptyPlan(ws.settings.company);
+    }
     const result = {};
 
     if (wantsGoogle) {
@@ -190,12 +210,13 @@ function createSync({
         logger.warn({ uid, err: short(e) }, 'google sync failed');
         await accounts.updateUser(uid, (u) => {
           if (!u.google || u.google.connectedAt !== connectedAt) return;
+          if (e.state) u.google.state = e.state; // keep what was created before the failure, so a retry does not duplicate it
           Object.assign(u.google, { lastError: revoked ? 'Google access was removed. Connect again.' : short(e), needsReconnect: revoked, lastTry: stamp() });
         });
       }
     }
 
-    if (hooks.length) {
+    if (eng && hooks.length) {
       const statuses = {};
       for (const h of hooks) {
         try {
@@ -214,10 +235,29 @@ function createSync({
     return result;
   }
 
+  /**
+   * With a shared lock: run unless another instance is syncing this account. That one is told to go again when it
+   * finishes, so the newest files still reach Google, and two instances never create the same events.
+   */
+  async function runLocked(uid) {
+    for (let round = 0; round < 3; round++) {
+      if (!(await lock.acquire(uid))) return { skipped: 'already syncing; this change will be included' };
+      let again;
+      let result;
+      try {
+        result = await run(uid);
+      } finally {
+        again = await lock.release(uid);
+      }
+      if (!again) return result;
+    }
+    return { skipped: 'still busy; the next sync will catch up' };
+  }
+
   /** Run now, one sync per user at a time. */
   function runNow(uid) {
     const prev = chains.get(uid) || Promise.resolve();
-    const next = prev.then(() => run(uid));
+    const next = prev.then(() => (lock ? runLocked(uid) : run(uid)));
     const settled = next.catch((e) => logger.error({ uid, err: short(e) }, 'sync failed'));
     chains.set(uid, settled);
     settled.then(() => chains.get(uid) === settled && chains.delete(uid));
@@ -225,7 +265,23 @@ function createSync({
   }
 
   /** Run shortly, so a batch of uploads causes one sync. */
+  const queued = new Set();
   function schedule(uid) {
+    if (afterResponse) {
+      // Serverless: a timer would be frozen with the instance. Run after this response instead; several schedules for
+      // the same account in one request become one sync.
+      if (queued.has(uid)) return;
+      queued.add(uid);
+      afterResponse(
+        Promise.resolve()
+          .then(() => {
+            queued.delete(uid);
+            return runNow(uid);
+          })
+          .catch(() => {})
+      );
+      return;
+    }
     clearTimeout(timers.get(uid));
     const t = setTimeout(() => {
       timers.delete(uid);

@@ -1,7 +1,7 @@
 'use strict';
 
 const { parseDate, detectDayFirst, parseMonthLabel } = require('./dates');
-const { parseNumber } = require('./numbers');
+const { parseNumber, detectDecimalComma } = require('./numbers');
 const { norm } = require('./detect');
 
 const MAX_ISSUES = 25;
@@ -23,6 +23,20 @@ const OPEN_WORDS = new Set([
   'sent',
   'approved'
 ]);
+
+/**
+ * A number reader for some columns of a table. Whether those columns write "1.234,50" or "1,234.50" is decided once,
+ * from the values that can only be read one way, so a bare "1.500" in the same columns is read the same way.
+ */
+function numberReader(table, cols, options) {
+  const used = cols.filter((c) => c != null);
+  // A lazy walk over the cells: no copy of the column, and no spread (which overflows the stack past ~150,000 rows).
+  function* cells() {
+    for (const row of table.rows) for (const c of used) yield row[c];
+  }
+  const decimalComma = options.decimalComma != null ? options.decimalComma : detectDecimalComma(cells());
+  return (v) => parseNumber(v, { decimalComma });
+}
 
 const cell = (row, mapping, field) => (mapping[field] == null ? null : row[mapping[field]]);
 const text = (v) => (v == null ? '' : String(v).trim());
@@ -59,18 +73,19 @@ function ledger(table, mapping, options = {}) {
   const col = (f) => (mapping[f] == null ? [] : table.rows.map((row) => row[mapping[f]]));
   const dayFirst = options.dayFirst != null ? options.dayFirst : detectDayFirst(col('issued').concat(col('due')));
   const terms = Number.isFinite(options.termsDays) ? options.termsDays : 30;
+  const num = numberReader(table, [mapping.amount, mapping.outstanding], options);
   const byKey = new Map();
 
   table.rows.forEach((row, idx) => {
     const line = table.lines[idx];
     const id = text(cell(row, mapping, 'id'));
     if (!id) return r.skip('Missing invoice number', line);
-    const amount = parseNumber(cell(row, mapping, 'amount'));
-    const owed = parseNumber(cell(row, mapping, 'outstanding'));
+    const amount = num(cell(row, mapping, 'amount'));
+    const owed = num(cell(row, mapping, 'outstanding'));
     const original = amount != null ? amount : owed;
     if (original == null) return r.skip('Amount is not a number (' + id + ')', line);
     if (original < 0) return r.skip('Credit note ignored (' + id + ')', line);
-    if (original === 0 && !owed) return r.skip('Zero amount (' + id + ')', line);
+    if (original === 0 && !owed) return r.skip((amount == null ? 'Nothing owed and no invoice amount' : 'Zero amount') + ' (' + id + ')', line);
 
     const typeText = norm(cell(row, mapping, 'type'));
     let type = options.ledgerType === 'payable' ? 'payable' : 'receivable';
@@ -146,15 +161,16 @@ function bank(table, mapping, options = {}) {
   const r = new Report();
   const dates = mapping.date == null ? [] : table.rows.map((row) => row[mapping.date]);
   const dayFirst = options.dayFirst != null ? options.dayFirst : detectDayFirst(dates);
+  const num = numberReader(table, [mapping.amount, mapping.credit, mapping.debit, mapping.balance], options);
   const txs = [];
   table.rows.forEach((row, idx) => {
     const line = table.lines[idx];
     const date = parseDate(cell(row, mapping, 'date'), { dayFirst });
     if (!date) return r.skip('Date not recognised', line);
-    let amount = parseNumber(cell(row, mapping, 'amount'));
+    let amount = num(cell(row, mapping, 'amount'));
     if (amount == null) {
-      const credit = parseNumber(cell(row, mapping, 'credit'));
-      const debit = parseNumber(cell(row, mapping, 'debit'));
+      const credit = num(cell(row, mapping, 'credit'));
+      const debit = num(cell(row, mapping, 'debit'));
       if (credit == null && debit == null) return r.skip('No amount', line);
       amount = Math.abs(credit || 0) - Math.abs(debit || 0);
     }
@@ -164,7 +180,7 @@ function bank(table, mapping, options = {}) {
       amount,
       description: text(cell(row, mapping, 'description')),
       reference: text(cell(row, mapping, 'reference')) || null,
-      balance: parseNumber(cell(row, mapping, 'balance'))
+      balance: num(cell(row, mapping, 'balance'))
     });
   });
   const { balance, balanceDate } = latestBalance(txs);
@@ -185,8 +201,9 @@ const TURNOVER_ROW = /^(total )?(net )?(turnover|revenue|revenues|sales|income)\
 function pnl(table, mapping, options = {}) {
   const r = new Report();
   const out = new Map();
+  const num = numberReader(table, mapping.months || [mapping.turnover], options);
   const put = (year, month, value, line) => {
-    const n = parseNumber(value);
+    const n = num(value);
     if (n == null) return;
     if (year == null) return r.skip('Month has no year', line);
     out.set(year + '-' + String(month).padStart(2, '0'), n * (options.scale || 1));

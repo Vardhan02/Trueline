@@ -283,20 +283,35 @@ describe('server signals', () => {
     return { c, ready, dir, text: () => text, closed: new Promise((r) => c.on('close', (code) => r(code))) };
   };
 
-  test('a second signal during shutdown is ignored and SIGINT also exits cleanly', async () => {
-    const s = start();
-    await s.ready;
-    s.c.kill('SIGINT');
-    s.c.kill('SIGTERM');
-    assert.strictEqual(await s.closed, 0);
-    fs.rmSync(s.dir, { recursive: true, force: true });
-  });
+  // Windows has no POSIX signals: child.kill() there terminates the process outright, so there is nothing to observe.
+  test(
+    'a second signal during shutdown is ignored and SIGINT also exits cleanly',
+    { skip: process.platform === 'win32' && 'no POSIX signals on Windows' },
+    async () => {
+      const s = start();
+      await s.ready;
+      s.c.kill('SIGINT');
+      s.c.kill('SIGTERM');
+      assert.strictEqual(await s.closed, 0);
+      fs.rmSync(s.dir, { recursive: true, force: true });
+    }
+  );
 
   test('an unhandled rejection is logged as fatal and the process shuts down', async () => {
     const preload = path.join(os.tmpdir(), 'tl-reject-' + process.pid + '.js');
-    fs.writeFileSync(preload, "setTimeout(() => Promise.reject(new Error('boom')), 300);\n");
-    const s = start({ NODE_OPTIONS: '--require ' + preload });
+    const trigger = preload + '.go';
+    // Reject only once the server is serving (start-up speed varies a lot between machines), when the test says so.
+    fs.writeFileSync(
+      preload,
+      "const t = setInterval(() => { if (require('fs').existsSync(" +
+        JSON.stringify(trigger) +
+        ")) { clearInterval(t); Promise.reject(new Error('boom')); } }, 20);\n"
+    );
+    const s = start({ NODE_OPTIONS: '--require ' + JSON.stringify(preload) });
+    await s.ready;
+    fs.writeFileSync(trigger, '');
     const code = await s.closed;
+    fs.rmSync(trigger, { force: true });
     assert.strictEqual(code, 0);
     assert.match(s.text(), /unhandled rejection/);
     fs.rmSync(preload, { force: true });

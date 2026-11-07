@@ -8,8 +8,8 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -17,13 +17,15 @@ jobs:
       - run: npm run lint
       - run: npm run format:check
       - run: npm run test:coverage
+      - name: Tests against Postgres (the storage used on Vercel)
+        run: npm run test:pg
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
   docker:
     runs-on: ubuntu-latest
     needs: check
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: docker build -t trueline:ci .
       - name: Boot and probe
         run: |

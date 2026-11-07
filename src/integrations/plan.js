@@ -8,7 +8,6 @@
  * Each entry has a stable key and a hash, so a sync only touches what changed.
  */
 const crypto = require('node:crypto');
-const { eur, fd } = require('../engine/engine');
 
 const EVENT_DAYS = 60;
 const RECEIPT_DAYS = 30;
@@ -20,6 +19,7 @@ const hash = (o) => crypto.createHash('sha256').update(JSON.stringify(o)).digest
 const addDays = (iso, n) => new Date(Date.parse(iso + 'T00:00:00Z') + n * 864e5).toISOString().slice(0, 10);
 
 function plan(engine) {
+  const { eur, fd } = engine; // this workspace's currency and year, not whichever engine was built last
   const today = engine.data.NOW.slice(0, 10);
   const open = engine.items.filter((i) => !i.closed && i.dueDate && i.daysTo != null);
   const company = engine.data.COMPANY || 'your company';
@@ -91,4 +91,13 @@ function plan(engine) {
   return { today, events, tasks, doc, subject: m.subject, rows: m.rows, cash: m.cash };
 }
 
-module.exports = { plan, EVENT_DAYS, MAX_EVENTS, MAX_TASKS };
+/** What Google should show once every file is removed: no dates, no tasks, and a doc that says so. */
+function emptyPlan(companyName) {
+  const company = companyName || 'your company';
+  const text = ['Trueline brief for ' + company, '', 'No files are connected, so there is nothing to brief. Upload files in Trueline to start again.'].join(
+    '\n'
+  );
+  return { events: [], tasks: [], doc: { title: 'Trueline brief · ' + company, text, hash: hash(text) }, subject: 'No files connected', rows: [], cash: null };
+}
+
+module.exports = { plan, emptyPlan, EVENT_DAYS, MAX_EVENTS, MAX_TASKS };

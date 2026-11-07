@@ -69,11 +69,13 @@ describe('accounts over HTTP', () => {
     const cookie = r.headers.get('set-cookie');
     assert.match(cookie, /HttpOnly/);
     assert.match(cookie, /SameSite=Lax/);
-    const raw = fs.readFileSync(path.join(t.dir, 'accounts.json'), 'utf8');
+    const raw = await t.rawAccounts();
     assert.ok(!raw.includes(PASSWORD), 'password never stored');
     assert.match(raw, /owner@example\.com/);
     assert.match(raw, /scrypt\$/);
-    assert.strictEqual((fs.statSync(path.join(t.dir, 'accounts.json')).mode & 0o777).toString(8), '600');
+    // Windows has no owner/group/other permission bits; there it reports 666 whatever mode was asked for.
+    // (With Postgres there is no accounts file to check.)
+    if (process.platform !== 'win32' && !t.db) assert.strictEqual((fs.statSync(path.join(t.dir, 'accounts.json')).mode & 0o777).toString(8), '600');
     const dup = await post('/api/signup', { email: 'owner@example.com', password: PASSWORD });
     assert.strictEqual(dup.status, 409);
     const s = await (await globalThis.fetch(t.base + '/api/session', { headers: { cookie: cookie.split(';')[0] } })).json();
@@ -124,13 +126,13 @@ describe('accounts over HTTP', () => {
     assert.strictEqual(acct.email, 'owner@example.com');
     const del = (password) => t.fetch(t.base + '/api/account', { method: 'DELETE', headers: J, body: JSON.stringify({ password }) });
     assert.strictEqual((await del('wrong')).status, 401);
-    const users = JSON.parse(fs.readFileSync(path.join(t.dir, 'accounts.json'), 'utf8')).users;
+    const users = JSON.parse(await t.rawAccounts()).users;
     const uid = users.find((u) => u.email === 'owner@example.com').id;
-    assert.ok(fs.existsSync(path.join(t.dir, 'users', uid)));
+    assert.ok(await t.hasWorkspace(uid));
     assert.strictEqual((await del('new long password')).status, 200);
-    assert.ok(!fs.existsSync(path.join(t.dir, 'users', uid)));
+    assert.ok(!(await t.hasWorkspace(uid)));
     assert.strictEqual((await t.fetch(t.base + '/api/dataset')).status, 401);
-    assert.strictEqual(JSON.parse(fs.readFileSync(path.join(t.dir, 'accounts.json'), 'utf8')).users.length, 1);
+    assert.strictEqual(JSON.parse(await t.rawAccounts()).users.length, 1);
   });
 });
 
@@ -155,7 +157,7 @@ describe('sign-up controls', () => {
     await coded.stop();
   });
   test('the first account adopts a workspace left from before accounts existed', async () => {
-    const t = await startApp({ signup: false });
+    const t = await startApp({ signup: false, pg: false }); // an upgrade from the single-workspace version: files only
     fs.writeFileSync(path.join(t.dir, 'workspace.json'), JSON.stringify({ settings: { company: 'Legacy Ltd' }, sources: [] }));
     await t.signup();
     const w = await (await t.fetch(t.base + '/api/workspace')).json();

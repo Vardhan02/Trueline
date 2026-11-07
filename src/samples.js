@@ -6,8 +6,17 @@ const path = require('node:path');
 
 const DIR = path.join(__dirname, '..', 'samples');
 
-/** A sample is a folder with sample.json: { title, description, settings, files:[{ file, kind?, options? }] }. */
+/**
+ * A sample is a folder with sample.json: { title, description, settings, files:[{ file, kind?, options? }] }.
+ * Samples ship with the app and do not change while it runs, so the folder is read once, not on every page load
+ * (this used to be synchronous disk reads inside a request). Each call returns fresh objects.
+ */
+let sampleList = null;
 function listSamples() {
+  if (!sampleList) sampleList = readSampleList();
+  return sampleList.map((s) => Object.assign({}, s));
+}
+function readSampleList() {
   return fsSync
     .readdirSync(DIR, { withFileTypes: true })
     .filter((d) => d.isDirectory() && fsSync.existsSync(path.join(DIR, d.name, 'sample.json')))

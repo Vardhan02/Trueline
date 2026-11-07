@@ -65,7 +65,7 @@
       if (f) f.focus();
     } else b.focus();
   }
-  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
   const ICON = {
     email:
       '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="3" width="13" height="10" rx="2"/><path d="m2 4.5 6 4.5 6-4.5"/></svg>',
@@ -160,16 +160,11 @@
       fd(eng.data.NOW) +
       '</p>' +
       '<div class="kpis">' +
-      (m.bank ? tile('bank', eur(m.bank.value), 'Live bank feed', '', 'Synced ' + fd(m.bank.date, true).split(', ')[1]) : '') +
-      tile('owed', eur(m.owed.value), m.owed.note, m.owed.lag ? eur(m.owed.lag) + ' in the bank, not in the ledger yet' : '', 'All sources agree') +
-      tile(
-        'overdue',
-        eur(m.overdue.value),
-        m.overdue.note,
-        m.overdue.unreceived ? eur(m.overdue.unreceived) + ' claimed paid, not in the bank' : '',
-        'Nothing unconfirmed'
-      ) +
-      tile('payOut', eur(m.payOut.value), m.payOut.note, '', 'Supplier notice on file') +
+      // The calm line under each figure states what it counts, never a claim the data has not checked.
+      (m.bank ? tile('bank', eur(m.bank.value), '', '', 'Statement added ' + fd(m.bank.date)) : '') +
+      tile('owed', eur(m.owed.value), '', m.owed.lag ? eur(m.owed.lag) + ' in the bank, not in the ledger yet' : '', m.owed.note) +
+      tile('overdue', eur(m.overdue.value), '', m.overdue.unreceived ? eur(m.overdue.unreceived) + ' claimed paid, not in the bank' : '', m.overdue.note) +
+      tile('payOut', eur(m.payOut.value), '', '', m.payOut.note) +
       '<button class="kpi" data-metric="health"><small>Data health</small><b>' +
       m.health.verified +
       ' of ' +
@@ -201,7 +196,7 @@
             .map(
               (i, n) =>
                 '<button class="mini" data-item="' +
-                i.ref +
+                esc(i.ref) +
                 '"><span class="n">' +
                 (n + 1) +
                 '</span><span><b>' +
@@ -235,7 +230,7 @@
       '</b><span class="basis">' +
       (s.n
         ? '<button class="link" data-hist="' +
-          it.ref +
+          esc(it.ref) +
           '">' +
           (s.wins > 0 ? 'Worked in ' + s.wins + ' of ' + s.n : 'Based on ' + s.n) +
           ' past ' +
@@ -244,7 +239,7 @@
         : 'No past cases yet') +
       '</span></span>' +
       (s.button
-        ? '<button class="btn sm' + (done ? ' done' : '') + '" data-prep="' + it.ref + '">' + (done ? 'Prepared ✓' : esc(s.button.label)) + '</button>'
+        ? '<button class="btn sm' + (done ? ' done' : '') + '" data-prep="' + esc(it.ref) + '">' + (done ? 'Prepared ✓' : esc(s.button.label)) + '</button>'
         : '')
     );
   }
@@ -316,12 +311,22 @@
       '</div>'
     );
   }
+  // The year being forecast: this year's partial P&L, or the year of "today" when there is none. The budget is for the year after.
+  const budgetYear = () => Number(eng.model.ytd.length ? eng.model.ytdYear : eng.data.NOW.slice(0, 4));
+  const GROWTH_MIN = -30,
+    GROWTH_MAX = 30;
   function budgetBody() {
-    const g = bgrowth == null ? Math.round(eng.model.growth * 100) : bgrowth;
+    const g = bgrowth == null ? Math.min(GROWTH_MAX, Math.max(GROWTH_MIN, Math.round(eng.model.growth * 100))) : bgrowth;
     return (
       '<div id="bud-dyn">' +
       budgetDyn(g) +
-      '</div><div class="slide"><label for="bg">Growth on 2026</label><input type="range" id="bg" min="0" max="20" step="1" value="' +
+      '</div><div class="slide"><label for="bg">Growth on ' +
+      budgetYear() +
+      '</label><input type="range" id="bg" min="' +
+      GROWTH_MIN +
+      '" max="' +
+      GROWTH_MAX +
+      '" step="1" value="' +
       g +
       '"><b id="bgv">' +
       g +
@@ -336,11 +341,15 @@
         b.months.map((m) => m.share)
       );
     return (
-      '<div class="fc-head"><div><b>Budget 2027</b></div><div style="text-align:right"><b>' +
+      '<div class="fc-head"><div><b>Budget ' +
+      (budgetYear() + 1) +
+      '</b></div><div style="text-align:right"><b>' +
       eur(b.annual) +
       '</b><small>vs ' +
       eur(b.prior) +
-      ' in 2026</small></div></div>' +
+      ' in ' +
+      budgetYear() +
+      '</small></div></div>' +
       '<div class="bud" role="img" aria-label="Budget by month. Busiest month: ' +
       b.peak +
       '">' +
@@ -439,21 +448,21 @@
       '<div class="foot">' +
       suggestion(it, short) +
       '<button class="link" data-open="' +
-      it.ref +
+      esc(it.ref) +
       '">Evidence ▾</button></div>' +
       '<div class="ev" id="ev-' +
-      it.ref +
+      esc(it.ref) +
       '" hidden>' +
       (n ? '<p class="reason">' + esc(it.reason) + '</p>' : '') +
       versus +
       (it.strongest && it.type !== 'info' ? '<div class="strong">Strongest evidence: ' + esc(it.strongest) + '</div>' : '') +
       (versus ? '' : chips(it.factIds, 'Sources')) +
       '<div style="margin-top:10px;display:flex;gap:16px">' +
-      (p ? '<button class="link" data-why="' + it.ref + '">Why this rank</button>' : '') +
+      (p ? '<button class="link" data-why="' + esc(it.ref) + '">Why this rank</button>' : '') +
       askBtn +
       '</div>' +
       '<div class="why" id="why-' +
-      it.ref +
+      esc(it.ref) +
       '" hidden>' +
       esc(why) +
       '</div></div></div></article>'
@@ -510,10 +519,10 @@
         : '<div class="empty">Everything has been checked.</div>') +
       '</div>';
     out +=
-      '<h2>Ask</h2><div class="card"><form class="askbox" id="askform"><input id="q" placeholder="Ask about an invoice, a bill, the VAT return…" autocomplete="off"><button class="btn">Ask</button></form>' +
+      '<h2>Ask</h2><div class="card"><form class="askbox" id="askform"><input id="q" placeholder="Ask about an invoice, a bill, a customer…" autocomplete="off"><button class="btn">Ask</button></form>' +
       '<div class="sugg">' +
-      ['What changed since Friday?', 'Are there any conflicts?', 'What’s the outlook for the next 90 days?', 'When is the VAT due?']
-        .map((s) => '<button class="pill" data-ask="' + s + '">' + s + '</button>')
+      ['What changed since the last brief?', 'Are there any conflicts?', 'What’s the outlook for the next 90 days?', 'Who owes me money?']
+        .map((s) => '<button class="pill" data-ask="' + esc(s) + '">' + esc(s) + '</button>')
         .join('') +
       '</div>' +
       '<div class="thread" id="thread" aria-live="polite">' +
@@ -529,7 +538,7 @@
       '<div class="turn"><div class="q">' +
       esc(t.q) +
       '<span class="mode">' +
-      (t.mode === 'live' ? 'Claude, live' : 'Local rules, offline demo') +
+      (t.mode === 'live' ? 'Claude, live' : 'Answered by rules from your records') +
       '</span></div>' +
       a.claims
         .map(
@@ -554,14 +563,35 @@
 
   /* drawer */
   let lastFocus = null;
-  function openDrawer(html) {
+  /** keep: re-rendering the same drawer with more rows, so stay where the reader is. */
+  function openDrawer(html, keep) {
     if (!$('#drawer').classList.contains('on')) lastFocus = document.activeElement;
+    const top = $('#drawer').scrollTop;
     $('#drawer').innerHTML = '<button class="x" id="close" aria-label="Close details">×</button>' + html;
     $('#drawer').classList.add('on');
     $('#scrim').classList.add('on');
+    if (keep) {
+      $('#drawer').scrollTop = top;
+      const more = $('#drawer [data-drawmore]');
+      if (more) more.focus();
+      return;
+    }
     $('#drawer').scrollTop = 0;
     $('#close').focus();
   }
+  // Long lists in a drawer (20,000 open invoices) are shown a page at a time: rendering them all at once freezes the browser.
+  const DRAWER_PAGE = 50;
+  let drawerMore = null; // re-renders the open drawer with a longer list
+  const moreRows = (list, limit) =>
+    list.length > limit
+      ? '<button class="btn ghost" data-drawmore="' +
+        (limit + DRAWER_PAGE) +
+        '">Show ' +
+        Math.min(DRAWER_PAGE, list.length - limit) +
+        ' more of ' +
+        (list.length - limit) +
+        ' left</button>'
+      : '';
   function closeDrawer() {
     if (!$('#drawer').classList.contains('on')) return;
     $('#drawer').classList.remove('on');
@@ -583,7 +613,8 @@
     let src = '';
     if (f.emailId) {
       const em = eng.data.EMAILS.find((e) => e.id === f.emailId);
-      const body = esc(em.body).replace(esc(f.snippet), '<mark>' + esc(f.snippet) + '</mark>');
+      // A function replacement: a "$&" or "$'" in the email text must not be read as a replacement pattern.
+      const body = esc(em.body).replace(esc(f.snippet), () => '<mark>' + esc(f.snippet) + '</mark>');
       src =
         '<h2>Full email</h2><div class="mail"><b>' +
         esc(em.subject) +
@@ -628,7 +659,8 @@
         '<p class="note">Trueline reads your sources and never changes them. If this looks wrong, the source itself is what needs fixing.</p>'
     );
   }
-  function listDrawer(title, sub, list) {
+  function listDrawer(title, sub, list, limit = DRAWER_PAGE, keep) {
+    drawerMore = (n) => listDrawer(title, sub, list, n, true);
     openDrawer(
       '<h3>' +
         esc(title) +
@@ -637,6 +669,7 @@
         '</div>' +
         (list.length
           ? list
+              .slice(0, limit)
               .map(
                 (i) =>
                   '<div class="item ' +
@@ -653,8 +686,9 @@
                   chips(i.factIds) +
                   '</div></div></div>'
               )
-              .join('')
-          : '<div class="empty">Nothing here.</div>')
+              .join('') + moreRows(list, limit)
+          : '<div class="empty">Nothing here.</div>'),
+      keep
     );
   }
   function metricDrawer(k) {
@@ -663,7 +697,7 @@
       return openDrawer(
         '<h3>In the bank: ' +
           eur(m.value) +
-          '</h3><div class="sub">Balance from the live bank feed. The bank is the strongest evidence in Trueline because it shows what actually arrived.</div>' +
+          '</h3><div class="sub">Closing balance from your latest bank statement. The bank is the strongest evidence in Trueline because it shows what actually arrived.</div>' +
           chips(m.factIds, 'Source')
       );
     if (k === 'overdue')
@@ -681,12 +715,14 @@
     listDrawer(m.label + ': ' + eur(m.value), 'Every item below is added into this number. Tap a source to see it.', m.items);
   }
 
-  function changesDrawer() {
+  function changesDrawer(limit = DRAWER_PAGE, keep) {
+    drawerMore = (n) => changesDrawer(n, true);
     openDrawer(
       '<h3>Since your last brief</h3><div class="sub">' +
         esc(fd(eng.data.LAST_BRIEF_AT, true)) +
         '</div>' +
         eng.changes
+          .slice(0, limit)
           .map(
             (f) =>
               '<div class="chg"><small>' +
@@ -696,10 +732,12 @@
               '</small><b style="font-weight:500">' +
               esc(f.summary) +
               '</b> <button class="viewsrc" data-fact="' +
-              f.id +
+              esc(f.id) +
               '">View source <span aria-hidden="true">↗</span></button></div>'
           )
-          .join('')
+          .join('') +
+        moreRows(eng.changes, limit),
+      keep
     );
   }
   function histDrawer(ref) {
@@ -752,7 +790,8 @@
         '</h3><div class="sub">' +
         (k === 'bud'
           ? 'Monthly shares come from these P&L years. Change the slider and the same shares are applied to a new total.'
-          : 'Past turnover sets the pattern, today’s bank balance is the starting point, and the VAT bill comes from your workings.') +
+          : 'Past turnover sets the pattern and the latest bank balance is the starting point' +
+            (eng.forecast.vat ? ', and the tax bill comes from your workings.' : '. No tax bill is included.')) +
         '</div>' +
         chips(ids, 'Sources')
     );
@@ -782,9 +821,10 @@
               '</em></div></div>'
           )
           .join('') +
-        '<div class="eh2">Cash</div><div class="ec"><div><small>In the bank</small><b>' +
-        eur(m.cash.bank) +
-        '</b></div><div><small>At risk</small><b>' +
+        '<div class="eh2">Cash</div><div class="ec">' +
+        // No statement uploaded means the balance is unknown, not zero.
+        (m.cash.bank != null ? '<div><small>In the bank</small><b>' + eur(m.cash.bank) + '</b></div>' : '') +
+        '<div><small>At risk</small><b>' +
         eur(m.cash.risk) +
         '</b></div></div>' +
         (m.unverified
@@ -800,10 +840,20 @@
         '<div><b>2. Compare, and rank the evidence</b>The bank shows what actually arrived, so it outranks the ledger, which outranks spreadsheets, which outrank an email. When two sources disagree you see both side by side.</div>' +
         '<div><b>3. Label how far to trust each line</b><ol><li><span class="badge agree">Sources agree</span> two or more sources say the same thing</li><li><span class="badge record">Ledger only</span> one fresh record, nothing contradicts it</li><li><span class="badge conflict">Sources conflict</span> someone has to decide which is right</li><li><span class="badge single">Unconfirmed</span> or stale: shown, but kept out of the ranking</li></ol></div>' +
         '<div><b>4. Cite, or say nothing</b>Answers to your questions must point to records. A statement with no record behind it, or a number that does not match its record, is not shown as fact. When there is no data, the answer is “I can’t verify that”.</div></div>' +
-        '<p class="note">The ranking, the trust labels and the forecast are plain rules and arithmetic you can read. A language model only words the answers, and its output is checked against the records before you see it.</p>'
+        '<p class="note">The ranking, the trust labels, the answers and the forecast are plain rules and arithmetic you can read. No language model decides what is true, and every answer is checked against the records before you see it.</p>'
     );
   }
   let toastT;
+  /** Say "Copied" only once the clipboard has really taken the text (writeText is async and can be refused). */
+  function copyText(text, btn) {
+    const done = () => (btn.textContent = 'Copied');
+    const fail = () => toast('Copy was blocked by the browser. Select the text and copy it yourself.');
+    try {
+      Promise.resolve(navigator.clipboard.writeText(text)).then(done, fail);
+    } catch (e) {
+      fail();
+    }
+  }
   function toast(msg) {
     let t = document.querySelector('.toast');
     if (!t) {
@@ -836,6 +886,23 @@
   const FILE_KIND = { ledger: 'Invoices and bills', bank: 'Bank transactions', pnl: 'Monthly profit and loss', emails: 'Email' };
   const failures = [];
   let pid = 0;
+  /**
+   * Everything that belongs to the signed-in person and lives only in this tab: drafts, questions, files waiting
+   * for columns, a just-created key. Cleared whenever the person changes, so the next one never sees it.
+   */
+  function forgetUser() {
+    prepared.length = 0;
+    thread.length = 0;
+    failures.length = 0;
+    pending = [];
+    Object.keys(shown).forEach((k) => delete shown[k]);
+    revealed = null;
+    bgrowth = null;
+    filter = 'all';
+    eng = null;
+    acct = null;
+    ws = null;
+  }
   async function api(path, opts) {
     const o = Object.assign({ method: 'GET', headers: {} }, opts);
     if (o.method !== 'GET') o.headers['X-Requested-With'] = 'trueline';
@@ -852,6 +919,7 @@
     }
     if (r.status === 401 && !/^\/(login|signup|account)/.test(path)) {
       session.authed = false;
+      forgetUser();
       render();
       throw new Error('auth');
     }
@@ -899,7 +967,7 @@
       t = info.tables[idx];
     if (!t) return {};
     const p = t.proposals[0];
-    return { kind: p.kind, table: idx, mapping: p.mapping || {}, options: Object.assign({}, p.layout ? { layout: p.layout } : {}, p.options) };
+    return { kind: p.kind, table: idx, mapping: Object.assign({}, p.mapping), options: Object.assign({}, p.layout ? { layout: p.layout } : {}, p.options) };
   };
   async function commit(file, choice) {
     const f = new FormData();
@@ -1331,7 +1399,7 @@
         if (!confirm('Delete your account and every file? This cannot be undone.')) return;
         await api('/account', { method: 'DELETE', json: { password: v('del-pw') } });
         session = Object.assign(session, { authed: false, user: null });
-        eng = null;
+        forgetUser();
         toast('Account deleted.');
       }
     } catch (e) {
@@ -1349,6 +1417,7 @@
         if (!confirm('Remove every uploaded file? Settings are kept.')) return;
         await api('/workspace', { method: 'DELETE' });
       } else if (d.act === 'sample') {
+        if (ws.sources.length && !confirm('Load the sample? It replaces your files and settings.')) return;
         busy = true;
         render();
         await api('/sample/' + d.id, { method: 'POST' });
@@ -1364,7 +1433,12 @@
         return render();
       } else if (d.act === 'usepend') {
         const p = pending.find((x) => x.id === +d.id);
-        await commit(p.file, p.choice);
+        try {
+          await commit(p.file, p.choice);
+        } catch (e) {
+          if (e.message !== 'auth') failures.push({ name: p.file.name, msg: e.message }); // name the file, not the button
+          return reload();
+        }
         pending = pending.filter((x) => x !== p);
         toast('Added ' + p.file.name + '.');
       }
@@ -1382,13 +1456,14 @@
     if (a === 'kind') {
       p.choice.kind = el.value || null;
       const prop = p.info.tables[p.choice.table].proposals.find((x) => x.kind === el.value);
-      p.choice.mapping = prop ? prop.mapping : {};
+      p.choice.mapping = prop ? Object.assign({}, prop.mapping) : {}; // a copy: edits must not change the original suggestion
       p.choice.options = prop ? Object.assign({}, prop.layout ? { layout: prop.layout } : {}, prop.options) : {};
     } else if (a === 'sheet') {
       p.choice.table = +el.value;
       const prop = p.info.tables[p.choice.table].proposals[0];
       p.choice.kind = prop.kind;
-      p.choice.mapping = prop.mapping;
+      p.choice.mapping = Object.assign({}, prop.mapping);
+      p.choice.options = Object.assign({}, prop.layout ? { layout: prop.layout } : {}, prop.options); // the old sheet's layout does not apply
     } else if (a === 'field') {
       if (el.value === '') delete p.choice.mapping[el.dataset.field];
       else p.choice.mapping[el.dataset.field] = +el.value;
@@ -1420,6 +1495,7 @@
       const body = { email: $('#em').value, password: $('#pw').value };
       if ($('#code')) body.code = $('#code').value;
       const r = await api(authMode === 'signup' ? '/signup' : '/login', { method: 'POST', json: body });
+      forgetUser();
       session.authed = true;
       session.user = r.user;
       if (authMode === 'signup') view = 'account';
@@ -1473,17 +1549,11 @@
     } else if (d.copyfrom) {
       const inp = document.getElementById(d.copyfrom);
       inp.select();
-      try {
-        navigator.clipboard.writeText(inp.value);
-        t.textContent = 'Copied';
-      } catch (e) {
-        /* clipboard blocked: the text is selected so the person can copy it */
-      }
+      copyText(inp.value, t); // if the clipboard is blocked, the text is still selected so the person can copy it
     } else if (t.id === 'b-logout') {
       api('/logout', { method: 'POST' }).finally(() => {
         session = Object.assign(session, { authed: false, user: null });
-        eng = null;
-        acct = null;
+        forgetUser();
         render();
       });
     } else if (d.view || d.go) {
@@ -1508,7 +1578,9 @@
       el.hidden = !el.hidden;
       t.textContent = el.hidden ? 'Evidence ▾' : 'Evidence ▴';
     } else if (d.changes) changesDrawer();
-    else if (d.why) {
+    else if (d.drawmore) {
+      if (drawerMore) drawerMore(+d.drawmore);
+    } else if (d.why) {
       const el = document.getElementById('why-' + d.why);
       el.hidden = !el.hidden;
     } else if (d.filter) {
@@ -1531,13 +1603,7 @@
         } else prepDrawer();
       }
     } else if (d.copy) {
-      const x = prepared[+d.copy];
-      try {
-        navigator.clipboard.writeText(x.button.body);
-      } catch (e) {
-        /* storage unavailable: preferences just are not saved */
-      }
-      t.textContent = 'Copied';
+      copyText(prepared[+d.copy].button.body, t);
     } else if (d.unprep) {
       prepared.splice(+d.unprep, 1);
       render();

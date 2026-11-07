@@ -4,3 +4,8 @@ dist/
 coverage/
 .env
 *.log
+
+# Vercel CLI: project link and pulled environment files (they hold tokens). The example stays tracked.
+.vercel
+.env*
+!.env.example

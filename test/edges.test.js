@@ -38,7 +38,7 @@ describe('eml bodies', () => {
       BASE.concat('Content-Type: multipart/alternative; boundary=XX'),
       '--XX\nContent-Type: text/html\n\n<style>p{}</style><p>Pay &pound;5 &amp; more&nbsp;now<br>line &lt;2&gt; &quot;q&quot; it&#39;s</p>\n--XX--'
     );
-    assert.match(m.body, /Pay &pound;5 & more now/);
+    assert.match(m.body, /Pay £5 & more now/); // named entities for money are decoded, so amounts are found
     assert.match(m.body, /<2> "q" it's/);
   });
   test('multipart with empty parts gives empty text', () => {
@@ -402,7 +402,7 @@ describe('server process', () => {
     assert.match(out.text, /ENCRYPTION_KEY/);
   });
 
-  test('starts, serves health, and shuts down cleanly on SIGTERM', async () => {
+  test('starts, serves health, and shuts down cleanly on SIGTERM', { skip: process.platform === 'win32' && 'no POSIX signals on Windows' }, async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tl-srv-'));
     const port = 20000 + Math.floor(Math.random() * 10000);
     const c = run({

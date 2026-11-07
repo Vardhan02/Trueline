@@ -56,25 +56,80 @@ function collectLedger(sources) {
         })
       );
     });
-  return [...byKey.values()];
+  const all = [...byKey.values()];
+  // Customer invoices and supplier bills are numbered independently, so "1001" can be both. Give the bill its own
+  // reference so the two are never merged into one item (and one silently dropped).
+  const invoiceIds = new Set(all.filter((l) => l.type === 'receivable').map((l) => l.id));
+  all.forEach((l) => {
+    if (l.type === 'payable' && invoiceIds.has(l.id)) l.ref = l.id + ' (bill)';
+  });
+  return all;
 }
 
-/** Match bank lines to invoices by reference first, then by customer name plus amount. Unmatched lines keep their own text. */
+/**
+ * An index of normalised phrases ("inv 10", "acme ltd") to the first record that has them, in ledger order. A text
+ * is matched by looking up each run of its words, so the cost grows with the text, not with the size of the ledger.
+ */
+function phraseIndex(records, keyOf, minLength) {
+  const map = new Map();
+  let maxWords = 0;
+  records.forEach((r, order) => {
+    const k = keyOf(r);
+    if (k.length < minLength || map.has(k)) return;
+    map.set(k, { r, order });
+    maxWords = Math.max(maxWords, k.split(' ').length);
+  });
+  /** The record whose phrase is the longest whole-word match in `text` (ties: earliest in the ledger), or undefined. */
+  return (text) => {
+    const words = text.split(' ').filter(Boolean);
+    let best;
+    let bestLength = -1;
+    for (let i = 0; i < words.length; i++) {
+      let phrase = '';
+      for (let j = i; j < Math.min(words.length, i + maxWords); j++) {
+        phrase = j === i ? words[j] : phrase + ' ' + words[j];
+        const hit = map.get(phrase);
+        if (hit && (phrase.length > bestLength || (phrase.length === bestLength && hit.order < best.order))) {
+          best = hit;
+          bestLength = phrase.length;
+        }
+      }
+    }
+    return best && best.r;
+  };
+}
+
+/**
+ * Match bank lines to invoices by reference first, then by customer name. Matching is on whole words: a payment for
+ * INV-10 must never be credited to INV-1. The longest matching reference wins. Unmatched lines keep their own text.
+ */
 function matchBank(transactions, ledger) {
-  const open = ledger.filter((l) => l.type === 'receivable' && l.status === 'open');
+  const receivables = ledger.filter((l) => l.type === 'receivable');
+  const findRef = phraseIndex(receivables, (l) => norm(l.id), 3); // "1" or "12" would match dates and amounts in any description
+  const findName = phraseIndex(
+    receivables.filter((l) => l.status === 'open'),
+    (l) => norm(l.party),
+    3
+  );
+  const seen = new Map();
   return transactions
     .filter((t) => t.amount > 0)
     .map((t, i) => {
       const text = norm(t.description + ' ' + (t.reference || ''));
-      const byRef = ledger.find((l) => l.type === 'receivable' && text.includes(norm(l.id)));
-      const byName = byRef || open.find((l) => norm(l.party).length >= 3 && text.includes(norm(l.party)));
+      const byRef = findRef(text);
+      const byName = byRef || findName(text);
       const hit = byRef || byName;
+      // Bank references repeat ("INTEREST", "DD"); every transaction still needs its own id to be cited.
+      const base = t.id || 'TX-' + String(i + 1).padStart(4, '0');
+      const n = (seen.get(base) || 0) + 1;
+      seen.set(base, n);
       return {
-        id: t.id || 'TX-' + String(i + 1).padStart(4, '0'),
+        id: n > 1 ? base + '-' + n : base,
         date: toIsoDateTime(t.date, '12:00:00'),
         counterparty: hit ? hit.party : t.description || 'Unknown',
         amount: t.amount,
-        reference: byRef ? byRef.id : t.reference || ''
+        reference: byRef ? byRef.id : t.reference || '',
+        matched: Boolean(hit)
       };
     });
 }
@@ -93,9 +148,11 @@ function collectBank(sources, ledger, now) {
       }
     })
   );
+  // Latest balance date wins. A statement with no balance date counts as the oldest; ties go to the newest upload.
+  const when = (s) => [s.records.balanceDate || '', s.uploadedAt || ''];
   const withBalance = banks
     .filter((s) => typeof s.records.balance === 'number')
-    .sort((a, b) => String(a.records.balanceDate).localeCompare(String(b.records.balanceDate)));
+    .sort((a, b) => when(a)[0].localeCompare(when(b)[0]) || when(a)[1].localeCompare(when(b)[1]));
   const last = withBalance[withBalance.length - 1];
   const syncedAt = banks
     .map((s) => s.uploadedAt)
@@ -117,21 +174,28 @@ function collectPnl(sources, settings) {
     byYear.get(y)[m - 1] = v;
   });
   const years = {};
+  byYear.forEach((arr, y) => {
+    if (arr.every((v) => v != null)) years[y] = arr;
+  });
+  const full = Object.keys(years).map(Number);
+  if (!full.length) return null;
+  // Year to date is the latest partial year after the last full one. Earlier partial years (data that starts or
+  // stops mid-year) are not "this year" and must not drive the forecast.
+  const lastFull = Math.max(...full);
   let ytdYear = null;
   let ytd = [];
-  [...byYear.keys()].sort().forEach((y) => {
-    const arr = byYear.get(y);
-    if (arr.every((v) => v != null)) years[y] = arr;
-    else {
+  [...byYear.keys()]
+    .filter((y) => y > lastFull)
+    .sort()
+    .forEach((y) => {
+      const arr = byYear.get(y);
       const firstGap = arr.findIndex((v) => v == null);
-      const run = arr.slice(0, firstGap === -1 ? 12 : firstGap);
+      const run = arr.slice(0, firstGap);
       if (run.length) {
         ytdYear = y;
         ytd = run;
       }
-    }
-  });
-  if (!Object.keys(years).length) return null;
+    });
   return { years, ytdYear, ytd, costOfSalesPct: settings.costOfSalesPct, overheadsMonthly: settings.overheadsMonthly };
 }
 
