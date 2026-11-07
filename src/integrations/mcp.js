@@ -4,7 +4,6 @@
  * Trueline as an MCP server (streamable HTTP, JSON responses). An AI assistant connected with a
  * personal API key can read the brief and ask cited questions; it cannot change anything.
  */
-const { eur, fd } = require('../engine/engine');
 const pkg = require('../../package.json');
 
 const TOOLS = [
@@ -30,6 +29,7 @@ const text = (t) => ({ content: [{ type: 'text', text: t }] });
 
 function callTool(engine, name, args) {
   if (!engine) return text('No files are connected to this Trueline account yet.');
+  const { eur, fd } = engine; // this account's currency and year
   if (name === 'get_brief') return text(engine.briefEmail().body);
   if (name === 'list_priorities') {
     const n = Math.min(Math.max(parseInt(args.limit, 10) || 10, 1), 50);

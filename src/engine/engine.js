@@ -5,28 +5,55 @@
   const MAX_EMAIL_ROWS = 5;
   const DAY = 864e5,
     AMBER_DAYS = 3;
-  let STALE_DAYS = 7; // set per workspace in create(); one workspace per process
   const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  const ms = (iso) => Date.parse(iso.length === 10 ? iso + 'T00:00:00Z' : iso);
+  // A ledger repeats the same few hundred dates thousands of times, and sorting re-reads them: parse each string once.
+  // Bounded, so a long-running server cannot grow it without limit.
+  const MEMO_MAX = 50000;
+  const memo = (map, key, make) => {
+    let v = map.get(key);
+    if (v === undefined) {
+      if (map.size >= MEMO_MAX) map.clear();
+      v = make();
+      map.set(key, v);
+    }
+    return v;
+  };
+  const msMemo = new Map();
+  const ms = (iso) => memo(msMemo, iso, () => Date.parse(iso.length === 10 ? iso + 'T00:00:00Z' : iso));
   const pad = (n) => (n < 10 ? '0' + n : '' + n);
   const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
   const plural = (n, w) => n + ' ' + w + (n === 1 ? '' : 's');
-
-  // Display settings for the engine instance most recently created. One workspace per process, so this is safe.
-  const fmt = { cur: '€', year: null };
   const SYMBOLS = { EUR: '€', GBP: '£', USD: '$' };
 
-  function fd(iso, withTime) {
-    const d = new Date(ms(iso));
-    let s = d.getUTCDate() + ' ' + MONTHS[d.getUTCMonth()];
-    if (fmt.year != null && d.getUTCFullYear() !== fmt.year) s += ' ' + d.getUTCFullYear();
-    if (withTime) s += ', ' + pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes());
-    return s;
+  /**
+   * Formatters for one workspace: its currency symbol, and its "this year" (dates in other years show the year).
+   * Every engine has its own, so on a server two accounts with different currencies can never borrow each other's.
+   */
+  function makeFormat(cur, year) {
+    const dates = new Map(); // "9 Nov" for each date string, made once
+    const fd = (iso, withTime) => {
+      if (!iso) return ''; // a record with no date must not take the whole brief down
+      return memo(dates, withTime ? iso + '|t' : iso, () => {
+        const d = new Date(ms(iso));
+        if (Number.isNaN(d.getTime())) return '';
+        let s = d.getUTCDate() + ' ' + MONTHS[d.getUTCMonth()];
+        if (year != null && d.getUTCFullYear() !== year) s += ' ' + d.getUTCFullYear();
+        if (withTime) s += ', ' + pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes());
+        return s;
+      });
+    };
+    const eur = (n) => {
+      const r = Math.round(n);
+      return (r < 0 ? '-' : '') + cur + String(Math.abs(r)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    };
+    return { fd, eur, cur, year };
   }
-  function eur(n) {
-    const r = Math.round(n);
-    return (r < 0 ? '-' : '') + fmt.cur + String(Math.abs(r)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  }
+
+  // Engine.fd / Engine.eur (module level) follow the engine created most recently. That suits a page with one engine
+  // (the browser app); server code uses the formatters of the engine it holds (engine.fd, engine.eur) instead.
+  let latest = makeFormat('€', null);
+  const fd = (iso, withTime) => latest.fd(iso, withTime);
+  const eur = (n) => latest.eur(n);
 
   const DEFAULT_SOURCES = {
     ledger: { name: 'Accounting ledger', short: 'ledger' },
@@ -43,9 +70,12 @@
     ['LEDGER', 'TRACKER', 'EMAILS', 'HISTORY'].forEach((k) => {
       if (!Array.isArray(data[k])) data[k] = [];
     });
-    STALE_DAYS = Number.isFinite(data.STALE_DAYS) && data.STALE_DAYS > 0 ? data.STALE_DAYS : 7;
-    fmt.cur = SYMBOLS[data.CURRENCY] || '€';
-    fmt.year = new Date(ms(data.NOW)).getUTCFullYear();
+    // Everything below is this engine's own: nothing about one workspace is stored where another engine would read it.
+    const STALE_DAYS = Number.isFinite(data.STALE_DAYS) && data.STALE_DAYS > 0 ? data.STALE_DAYS : 7;
+    const fmt = makeFormat(SYMBOLS[data.CURRENCY] || '€', new Date(ms(data.NOW)).getUTCFullYear());
+    const fd = fmt.fd;
+    const eur = fmt.eur;
+    latest = fmt;
     data.LAST_BRIEF_AT = data.LAST_BRIEF_AT || new Date(ms(data.NOW) - 3 * DAY).toISOString();
     data.SOURCES = Object.assign({}, data.SOURCES);
     Object.keys(DEFAULT_SOURCES).forEach((k) => {
@@ -75,14 +105,15 @@
       const f = [];
       data.LEDGER.forEach((r) =>
         f.push({
-          id: 'led_' + r.id,
+          // r.ref differs from r.id only when a bill shares its number with an invoice ("1001 (bill)").
+          id: 'led_' + (r.ref || r.id),
           sourceId: 'ledger',
           sourceType: 'ledger',
           sourceName: S.ledger.name,
           short: S.ledger.short,
           origin: (r.file || S.ledger.file) + ' · row ' + r.row,
           date: S.ledger.syncedAt,
-          ref: r.id,
+          ref: r.ref || r.id,
           party: r.party,
           kind: 'ledger_entry',
           entryType: r.type,
@@ -150,8 +181,14 @@
       if (data.BANK) {
         const B = data.BANK,
           bs = S.bank;
-        const credited = (l) =>
-          B.transactions.some((t) => t.reference === l.id || (t.counterparty.toLowerCase() === l.party.toLowerCase() && ms(t.date) >= ms(l.issued)));
+        // Indexed once, so checking every open invoice does not rescan the whole statement (thousands × thousands).
+        const creditRefs = new Set(B.transactions.map((t) => t.reference));
+        const latestFrom = new Map();
+        B.transactions.forEach((t) => {
+          const k = String(t.counterparty).toLowerCase();
+          latestFrom.set(k, Math.max(latestFrom.get(k) || -Infinity, ms(t.date)));
+        });
+        const credited = (l) => creditRefs.has(l.id) || (latestFrom.get(String(l.party).toLowerCase()) || -Infinity) >= ms(l.issued);
         B.transactions.forEach((t) =>
           f.push({
             id: 'bnk_' + t.id,
@@ -161,7 +198,8 @@
             short: bs.short,
             origin: 'Bank feed · transaction ' + t.id,
             date: t.date,
-            ref: t.reference,
+            // A credit not matched to any invoice is not evidence about one: its own reference must not open an item.
+            ref: t.matched === false ? null : t.reference || null,
             party: t.counterparty,
             kind: 'bank_credit',
             claim: 'paid',
@@ -323,11 +361,11 @@
         case 'payment_claim':
           return f.party + ' says it ' + (f.claim === 'partial_paid' ? 'sent ' : 'paid ') + a;
         case 'chase_sent':
-          return 'You sent ' + f.party + ' a reminder for ' + a;
+          return 'You sent ' + f.party + ' a reminder' + (a ? ' for ' + a : '');
         case 'promise_to_pay':
-          return f.party + ' promised to pay on ' + fd(f.promisedDate);
+          return f.party + ' promised to pay' + (f.promisedDate ? ' on ' + fd(f.promisedDate) : '');
         case 'supplier_notice':
-          return f.party + ' sent a second notice: ' + a + ' due ' + fd(f.dueDate);
+          return f.party + ' sent a payment notice' + (a ? ': ' + a : '') + (f.dueDate ? ' due ' + fd(f.dueDate) : '');
         case 'obligation':
           return (
             (f.sourceType === 'email' ? 'An email says' : cap(f.short) + ' show') +
@@ -359,7 +397,8 @@
     facts.forEach((f) => {
       f.summary = summarize(f);
     });
-    const factById = {};
+    // Null-prototype maps: references come from user files, and "constructor" or "__proto__" must be ordinary keys.
+    const factById = Object.create(null);
     facts.forEach((f) => (factById[f.id] = f));
 
     // 2. Reconcile: group by reference, compare sources, assign a trust state.
@@ -551,22 +590,32 @@
       it.parts = { time: Math.round(time), size: Math.round(size), statutory, reliability: rel, bonus, note };
     }
 
-    const groups = {};
+    const groups = Object.create(null);
     facts.forEach((f) => {
       if (f.ref) (groups[f.ref] = groups[f.ref] || []).push(f);
     });
     const items = Object.keys(groups).map((ref) => assessGroup(ref, groups[ref]));
-    const byRef = {};
+    const byRef = Object.create(null);
     items.forEach((i) => (byRef[i.ref] = i));
 
     // 3b. Suggestions: one short line plus a button, built from past cases in the action log.
-    const contactFor = (party) => {
-      const em = data.EMAILS.find((m) => (m.extracted || []).some((x) => x.party === party));
-      return em ? (em.direction === 'sent' ? em.to : em.from) : '';
-    };
+    // Each party's contact is the first email that mentions them: indexed in one pass, not searched again per item.
+    const contacts = new Map();
+    data.EMAILS.forEach((m) =>
+      (m.extracted || []).forEach((x) => {
+        if (!contacts.has(x.party)) contacts.set(x.party, m.direction === 'sent' ? m.to : m.from);
+      })
+    );
+    const contactFor = (party) => contacts.get(party) || '';
     const shift = (dateStr, n) => new Date(ms(dateStr) + n * DAY).toISOString().slice(0, 10);
+    const historyByAction = new Map(); // built once: suggest() asks for every open item
+    facts.forEach((f) => {
+      if (f.kind !== 'history') return;
+      if (!historyByAction.has(f.action)) historyByAction.set(f.action, []);
+      historyByAction.get(f.action).push(f);
+    });
     function pastCases(action, party) {
-      const all = facts.filter((f) => f.kind === 'history' && f.action === action);
+      const all = historyByAction.get(action) || [];
       const own = all.filter((f) => f.party === party);
       const cases = own.length >= 2 ? own : all;
       const wins = cases.filter((f) => f.claim === 'worked' || f.claim === 'early').length;
@@ -987,20 +1036,26 @@
         });
         if (!issues.length) {
           const cited = ids.map((id) => factById[id]);
-          const amounts = new Set(cited.filter((f) => f.amount != null).map((f) => f.amount));
-          amounts.add(cited.filter((f) => f.kind === 'ledger_entry').reduce((s, f) => s + f.amount, 0));
-          const gaps = new Set();
+          // Amounts are shown in whole currency units (eur() rounds), so they are compared that way: £1,490.82 shows as £1,491.
+          const amounts = new Set();
+          const add = (n) => Number.isFinite(n) && amounts.add(Math.round(n));
+          const parse = (m) => parseInt(m.replace(/[^\d]/g, ''), 10) * (m.charAt(0) === '-' ? -1 : 1);
+          cited.forEach((f) => {
+            if (f.amount != null) add(f.amount);
+            // A figure quoted in the record's own text (e.g. each month of a P&L row) is part of that record.
+            (String(f.snippet || '').match(/-?[€£$]\s?[\d,]+/g) || []).forEach((m) => add(parse(m)));
+          });
+          add(cited.filter((f) => f.kind === 'ledger_entry').reduce((s, f) => s + f.amount, 0));
           cited.forEach((f) => {
             if (f.kind === 'ledger_entry')
               cited.forEach((g) => {
-                if (g !== f && g.amount != null && g.amount < f.amount && g.kind !== 'ledger_entry') gaps.add(f.amount - g.amount);
+                if (g !== f && g.amount != null && g.amount < f.amount && g.kind !== 'ledger_entry') add(f.amount - g.amount);
               });
           });
-          gaps.forEach((g) => amounts.add(g));
-          (c.derived || []).forEach((n) => amounts.add(n));
+          (c.derived || []).forEach(add);
           const found = String(c.text).match(/-?[€£$]\s?[\d,]+/g) || [];
           found.forEach((m) => {
-            const n = parseInt(m.replace(/[^\d]/g, ''), 10) * (m.charAt(0) === '-' ? -1 : 1);
+            const n = parse(m);
             if (!amounts.has(n) && !amounts.has(Math.abs(n))) issues.push(m + ' does not match the cited records');
           });
         }
@@ -1012,13 +1067,13 @@
     // 5. Ask: retrieve records for a question, then compose cited claims.
     // Customer and supplier names the question can mention: the full name, or its first word when that word is unique.
     const NAMES = (() => {
-      const byParty = {};
+      const byParty = Object.create(null);
       items
         .filter((i) => i.type === 'receivable' || i.type === 'payable')
         .forEach((i) => {
           (byParty[i.party.toLowerCase()] = byParty[i.party.toLowerCase()] || []).push(i.ref);
         });
-      const first = {};
+      const first = Object.create(null);
       Object.keys(byParty).forEach((p) => {
         const w = p.split(/\s+/)[0];
         first[w] = (first[w] || []).concat(w === p ? [] : [p]);
@@ -1032,15 +1087,67 @@
       });
       return out;
     })();
+    /**
+     * What a question can name, indexed once (on the first question): every invoice, bill and tax reference, and the
+     * names above, by lower-case text. A question is then read by looking up its whole-word stretches, so asking costs
+     * the length of the question, not one pattern per record.
+     */
+    let mentionIndex = null;
+    function mentions() {
+      if (mentionIndex) return mentionIndex;
+      const refsByText = new Map(); // longest first, then item order, as a tie-break
+      items
+        .filter((i) => (i.type === 'receivable' || i.type === 'payable' || i.type === 'obligation') && i.ref.length >= 3)
+        .map((i) => i.ref)
+        .sort((a, b) => b.length - a.length)
+        .forEach((ref) => {
+          const k = ref.toLowerCase();
+          if (!refsByText.has(k)) refsByText.set(k, ref);
+        });
+      const namesByText = new Map();
+      NAMES.forEach(([name, ref]) => {
+        if (!namesByText.has(name)) namesByText.set(name, []);
+        namesByText.get(name).push(ref);
+      });
+      const longest = (m) => {
+        let n = 0;
+        for (const k of m.keys()) if (k.length > n) n = k.length; // a loop, not a spread: there can be 100,000+ keys
+        return n;
+      };
+      mentionIndex = { refsByText, namesByText, maxRef: longest(refsByText), maxName: longest(namesByText) };
+      return mentionIndex;
+    }
+    const isWordChar = (c) => (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+    /** Every whole-word stretch of `s` up to `max` characters that `map` knows, as [start, end, value]. */
+    function wholeWords(s, map, max) {
+      const found = [];
+      for (let i = 0; i < s.length; i++) {
+        if (i > 0 && isWordChar(s[i - 1])) continue; // must start a word
+        for (let j = i + 1; j <= Math.min(s.length, i + max); j++) {
+          if (j < s.length && isWordChar(s[j])) continue; // must end a word
+          const v = map.get(s.slice(i, j));
+          if (v !== undefined) found.push([i, j, v]);
+        }
+      }
+      return found;
+    }
     function retrieve(q) {
       const s = q.toLowerCase();
       let intent = 'none',
         list = [];
       const refs = new Set();
       (q.match(/(inv|bill)[- ]?\d+/gi) || []).forEach((m) => refs.add(m.toUpperCase().replace(/[- ]?(\d)/, '-$1')));
-      NAMES.forEach((n) => {
-        if (s.includes(n[0])) refs.add(n[1]);
-      });
+      // Any known invoice or bill reference, as a whole word, longest first: "1001 (bill)" must not also pull in "1001".
+      const ix = mentions();
+      const taken = [];
+      wholeWords(s, ix.refsByText, ix.maxRef)
+        .sort((a, b) => b[1] - b[0] - (a[1] - a[0]) || a[0] - b[0])
+        .forEach(([i, j, ref]) => {
+          if (taken.some(([x, y]) => i < y && x < j)) return; // inside a longer reference already found
+          taken.push([i, j]);
+          refs.add(ref);
+        });
+      wholeWords(s, ix.namesByText, ix.maxName).forEach(([, , list2]) => list2.forEach((ref) => refs.add(ref)));
       if (/\bvat\b|\btax\b|\bros\b/.test(s)) items.filter((i) => i.type === 'obligation').forEach((i) => refs.add(i.ref));
       if (refs.size) {
         intent = 'entity';
@@ -1105,7 +1212,7 @@
       let draft = null;
       if (r.intent === 'none')
         notes.push(
-          'I can’t answer that from the records I have. I can cover invoices, bills, the VAT return, conflicts between sources, and what changed since the last brief.'
+          'I can’t answer that from the records I have. I can cover invoices, bills, customers and suppliers, the bank balance, the outlook, conflicts between sources, and what changed since the last brief.'
         );
       else if (r.intent === 'changes') {
         r.facts.forEach((f) => claims.push({ text: cap(f.short) + ' (' + fd(f.date) + '): ' + f.snippet, record_ids: [f.id] }));
@@ -1157,7 +1264,7 @@
       } else if (r.items.length) {
         if (r.intent === 'overdue') {
           claims.push({
-            text: plural(r.items.length, 'invoice') + ' are overdue, totalling ' + eur(sum(r.items)) + ' in the ledger.',
+            text: plural(r.items.length, 'invoice') + (r.items.length === 1 ? ' is' : ' are') + ' overdue, totalling ' + eur(sum(r.items)) + ' in the ledger.',
             record_ids: ledgerIds(r.items)
           });
         }
@@ -1229,7 +1336,9 @@
       askLocal,
       composeLocal,
       coverage,
-      constants: { STALE_DAYS, AMBER_DAYS }
+      constants: { STALE_DAYS, AMBER_DAYS },
+      fd,
+      eur
     };
   }
 

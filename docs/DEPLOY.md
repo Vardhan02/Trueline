@@ -25,18 +25,20 @@ trueline.example.com {
 }
 ```
 
+Sign-in limits are counted per visitor address. Trueline reads that address from `X-Forwarded-For` only when the request comes from a proxy on the same machine or a private network, which covers Caddy or nginx on localhost, Docker networks and cloud load balancers. If your proxy reaches Trueline from a public address, set `TRUST_PROXY` to its address or to the number of proxy hops.
+
 ## Operations
 
 - **Health:** `/healthz` (process up), `/readyz` (data dir reachable). Docker's healthcheck uses `/readyz`.
 - **Logs:** JSON lines on stdout (pino). Cookies and auth headers are redacted. Each response carries `X-Request-Id`.
-- **Backup:** copy `workspace.json`. It holds the uploaded finance records, so protect it like the source files.
+- **Backup:** copy the whole data folder (`accounts.json` and `users/`); see [Backups and keys](#backups-and-keys). It holds the uploaded finance records, so protect it like the source files.
 - **Upgrade:** `git pull && docker compose up -d --build`. The data file format is backward compatible within a major version.
 - **Shutdown:** SIGTERM drains requests, then exits (10s limit).
-- **Limits:** `MAX_UPLOAD_MB` (default 10), 50 sources, upload and login rate limits.
+- **Limits:** `MAX_UPLOAD_MB` (default 10) per file, 50 sources, upload, sign-in and sign-up rate limits (sign-up also per email). The inbound link takes up to 25 MB per request (each file still within `MAX_UPLOAD_MB`, at most 10 files) and reads two requests at a time; others wait their turn.
 
 ## Security notes
 
-One shared password, no per-user accounts, no audit log. Fine for a single finance team; not for multi-company hosting. Data is stored unencrypted on the volume: use disk encryption.
+Individual accounts with their own files and connections; no shared team workspaces, roles or audit log yet. Uploaded files are stored unencrypted on the volume (only Google tokens and webhook addresses are encrypted): use disk encryption.
 
 ## One-click hosting (Render)
 

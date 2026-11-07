@@ -4,6 +4,19 @@ const path = require('node:path');
 
 const num = (v, d) => (v === undefined || v === '' ? d : Number(v));
 
+/**
+ * Which hops may set X-Forwarded-For. The client IP decides rate limits, so trusting a header the client wrote itself
+ * would let anyone reset their sign-in limit. By default only proxies on this machine or a private network are trusted
+ * (Caddy or nginx on localhost, a Docker network, a cloud load balancer); a client on the internet cannot pose as one.
+ * TRUST_PROXY accepts what Express accepts: true/false, a hop count, or a list of addresses and subnets.
+ */
+function trustProxy(v) {
+  if (v === undefined || v === '') return 'loopback, linklocal, uniquelocal';
+  if (v === 'true' || v === 'false') return v === 'true';
+  if (/^\d+$/.test(v)) return Number(v);
+  return v;
+}
+
 /** Read and validate environment variables once, at start-up. Fails fast with a readable message. */
 function loadConfig(env = process.env) {
   const errors = [];
@@ -27,7 +40,8 @@ function loadConfig(env = process.env) {
     maxUploadMb: num(env.MAX_UPLOAD_MB, 10),
     maxSources: num(env.MAX_SOURCES, 50),
     logLevel: env.LOG_LEVEL || (production ? 'info' : 'debug'),
-    cookieSecure: env.COOKIE_SECURE ? env.COOKIE_SECURE === 'true' : production
+    cookieSecure: env.COOKIE_SECURE ? env.COOKIE_SECURE === 'true' : production,
+    trustProxy: trustProxy(env.TRUST_PROXY)
   };
   if (!Number.isInteger(cfg.port) || cfg.port < 0 || cfg.port > 65535) errors.push('PORT must be 0-65535');
   if (!(cfg.maxUploadMb > 0 && cfg.maxUploadMb <= 50)) errors.push('MAX_UPLOAD_MB must be between 1 and 50');

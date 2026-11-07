@@ -12,6 +12,11 @@ const MONEY = /[€£$]\s?(\d[\d,]*(?:\.\d{1,2})?)/;
 const DAY_MS = 864e5;
 
 const iso = (d) => d.toISOString().slice(0, 10);
+const norm = (s) =>
+  String(s || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
 
 function sentences(body) {
   return String(body)
@@ -65,14 +70,25 @@ function extractClaims(mail, ledger, ownDomain) {
       .includes('@' + own)
       ? 'sent'
       : 'received';
-  const byId = new Map(ledger.map((l) => [l.id.toLowerCase(), l]));
+  // An invoice and a bill can share a number. Pick the one whose customer or supplier the email mentions; else the invoice.
+  const mailText = norm([mail.from, mail.subject, mail.body].join(' '));
+  const byId = new Map();
+  ledger.forEach((l) => {
+    const k = l.id.toLowerCase();
+    const prev = byId.get(k);
+    const named = (x) => norm(x.party).length >= 3 && (' ' + mailText + ' ').includes(' ' + norm(x.party) + ' ');
+    if (!prev || (named(l) && !named(prev)) || (named(l) === named(prev) && l.type === 'receivable')) byId.set(k, l);
+  });
   const ids = [...byId.keys()].sort((a, b) => b.length - a.length);
   const extracted = [];
   const seen = new Set();
 
   // A claim sentence often does not repeat the invoice number ("We will pay this on Friday."), so fall back to the
   // most recent number mentioned earlier in the body, then to the subject line.
-  const findId = (text) => ids.find((i) => text.toLowerCase().includes(i));
+  // Whole words only: "INV-1" must not be found inside "INV-10".
+  const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const patterns = new Map(ids.map((i) => [i, new RegExp('(^|[^a-z0-9])' + escapeRe(i) + '($|[^a-z0-9])')]));
+  const findId = (text) => ids.find((i) => patterns.get(i).test(text.toLowerCase()));
   let lastId = findId(String(mail.subject || ''));
   sentences(mail.body).forEach((sentence) => {
     const own = findId(sentence);
@@ -99,7 +115,7 @@ function extractClaims(mail, ledger, ownDomain) {
     if (!claim || seen.has(claim.kind + id)) return;
     seen.add(claim.kind + id);
     const out = Object.assign(
-      { kind: claim.kind, ref: rec.id, party: rec.party, claim: claim.claim },
+      { kind: claim.kind, ref: rec.ref || rec.id, party: rec.party, claim: claim.claim },
       amount != null ? { amount } : {},
       claim.promisedDate ? { promisedDate: claim.promisedDate } : {},
       claim.dueDate ? { dueDate: claim.dueDate } : {},

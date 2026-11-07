@@ -60,6 +60,7 @@ async function ingest(buffer, filename, choice = {}) {
       balance: o.balance,
       balanceDate: o.balanceDate
     };
+    if (!o.transactions.length && o.balance == null) throw new UnsupportedFileError('No transactions or balance were found in this bank file.');
     const dates = o.transactions.map((t) => t.date).sort();
     return {
       kind: 'bank',
@@ -73,9 +74,12 @@ async function ingest(buffer, filename, choice = {}) {
   }
   if (type === 'eml') {
     const m = parseEml(buffer);
+    if (!m.from && !m.date && m.subject === '(no subject)')
+      throw new UnsupportedFileError('This does not look like an email: it has no From, Date or Subject line. Forward the original message.');
     const notes = [];
     if (!m.date) {
       m.date = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
+      m.dateAssumed = true; // so a resend of the same email is still recognised as a duplicate
       notes.push('This email has no Date header, so the upload time was used.');
     }
     return {
@@ -101,7 +105,11 @@ async function ingest(buffer, filename, choice = {}) {
   }
   if (!kind || !mapping) throw new UnsupportedFileError('We could not tell what this file contains. Choose its type and match the columns.');
   const specs = fieldSpecs(kind).filter((f) => f.required);
-  const missing = specs.filter((f) => mapping[f.field] == null && !(kind === 'pnl' && mapping.months)).map((f) => f.label);
+  // A ledger can give either the invoice amount or only what is still owed; normalize() reads whichever is there.
+  const covered = (f) => (kind === 'pnl' && mapping.months) || (kind === 'ledger' && f.field === 'amount' && mapping.outstanding != null);
+  const missing = specs
+    .filter((f) => mapping[f.field] == null && !covered(f))
+    .map((f) => (kind === 'ledger' && f.field === 'amount' ? f.label + ' (or amount still owed)' : f.label));
   if (missing.length) throw new UnsupportedFileError('Missing columns: ' + missing.join(', ') + '.');
   const result = normalize(kind, table, mapping, options);
   const empty = (kind === 'bank' ? result.records.transactions.length : kind === 'pnl' ? result.records.months.length : result.records.length) === 0;

@@ -1,0 +1,4 @@
+# Keep LF line endings on every platform (Prettier and .editorconfig expect LF; Windows checkouts would otherwise get CRLF).
+* text=auto eol=lf
+*.xlsx binary
+*.bin binary

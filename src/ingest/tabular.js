@@ -1,7 +1,7 @@
 'use strict';
 
 const { parse } = require('csv-parse/sync');
-const { decodeText } = require('./files');
+const { decodeText, UnsupportedFileError } = require('./files');
 
 const MAX_HEADER_SCAN = 20;
 
@@ -73,14 +73,29 @@ function tableFromGrid(grid, name) {
 function readDelimited(buffer) {
   const text = decodeText(buffer);
   const delimiter = detectDelimiter(text);
-  const grid = parse(text, { delimiter, relax_column_count: true, relax_quotes: true, skip_empty_lines: true, trim: true });
+  let grid;
+  try {
+    grid = parse(text, { delimiter, relax_column_count: true, relax_quotes: true, skip_empty_lines: true, trim: true });
+  } catch (e) {
+    // e.g. a quote that is never closed. The file is the problem, not the server: say so, with the parser's line number.
+    throw new UnsupportedFileError(
+      'This file could not be read as a table (' + String(e.message).split('\n')[0] + '). Check it opens in a spreadsheet, then save it as .csv again.'
+    );
+  }
   return Object.assign(tableFromGrid(grid), { delimiter });
 }
 
 /** Read every sheet of an .xlsx workbook. read-excel-file is ESM-first, so it is loaded lazily. */
 async function readWorkbook(buffer) {
   const { default: readExcel } = await import('read-excel-file/node');
-  const sheets = await readExcel(buffer);
+  let sheets;
+  try {
+    sheets = await readExcel(buffer);
+  } catch {
+    throw new UnsupportedFileError(
+      'This Excel file could not be read. It may be damaged or password-protected: open it in Excel and save it again as .xlsx or .csv.'
+    );
+  }
   return sheets.map((s) => tableFromGrid(s.data, s.sheet)).filter((t) => t.headers.length > 0);
 }
 

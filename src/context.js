@@ -9,6 +9,7 @@ const { createAuth } = require('./auth');
 const { createVault } = require('./security');
 const { createGoogle } = require('./integrations/google');
 const { createSync } = require('./integrations/sync');
+const { guardedPost } = require('./integrations/netguard');
 const { createApp } = require('./app');
 
 /** In development only: keep a generated encryption key next to the data so restarts can still read stored secrets. */
@@ -23,8 +24,13 @@ async function devKey(dir) {
   }
 }
 
-/** Wire every part together. Tests pass their own http (fake Google), clock and debounce. */
-async function createContext(cfg, { logger, clock = Date.now, http = globalThis.fetch, debounceMs, override = {} } = {}) {
+/**
+ * Wire every part together. Tests pass their own http (fake Google and webhooks), clock and debounce.
+ * Without one, Google is called with fetch and webhooks go through the private-network guard.
+ */
+async function createContext(cfg, { logger, clock = Date.now, http, debounceMs, override = {} } = {}) {
+  const webhookHttp = http || guardedPost;
+  http = http || globalThis.fetch;
   const accounts = override.accounts || new AccountStore(cfg.dataDir);
   await accounts.init();
   const vault = createVault(cfg.encryptionKey || (await devKey(cfg.dataDir)));
@@ -43,7 +49,7 @@ async function createContext(cfg, { logger, clock = Date.now, http = globalThis.
     http
   });
   const auth = createAuth(cfg, accounts, clock);
-  const sync = createSync({ accounts, workspaceFor, vault, google, logger, clock, http, debounceMs });
+  const sync = createSync({ accounts, workspaceFor, vault, google, logger, clock, http: webhookHttp, debounceMs });
   const app = createApp({ cfg, accounts, workspaceFor, auth, vault, google, sync, logger, clock });
   return { app, accounts, workspaceFor, auth, vault, google, sync };
 }

@@ -73,7 +73,8 @@ describe('accounts over HTTP', () => {
     assert.ok(!raw.includes(PASSWORD), 'password never stored');
     assert.match(raw, /owner@example\.com/);
     assert.match(raw, /scrypt\$/);
-    assert.strictEqual((fs.statSync(path.join(t.dir, 'accounts.json')).mode & 0o777).toString(8), '600');
+    // Windows has no owner/group/other permission bits; there it reports 666 whatever mode was asked for.
+    if (process.platform !== 'win32') assert.strictEqual((fs.statSync(path.join(t.dir, 'accounts.json')).mode & 0o777).toString(8), '600');
     const dup = await post('/api/signup', { email: 'owner@example.com', password: PASSWORD });
     assert.strictEqual(dup.status, 409);
     const s = await (await globalThis.fetch(t.base + '/api/session', { headers: { cookie: cookie.split(';')[0] } })).json();

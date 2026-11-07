@@ -24,8 +24,7 @@
     "helmet": "^8.3.0",
     "multer": "^2.5.0",
     "pino": "^10.4.0",
-    "read-excel-file": "^9.3.14",
-    "yarn": "^1.22.22"
+    "read-excel-file": "^9.3.14"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
